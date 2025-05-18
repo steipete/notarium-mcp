@@ -1,15 +1,10 @@
 // MCP Notarium Main Entry Point
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { config, printConfigVars, validateConfig } from './config.js';
 import logger from './logging.js';
 import type { Database as DB } from 'better-sqlite3'; // Added DB type import
 import { initializeCache, closeCache } from './cache/sqlite.js';
 import { BackendSyncService } from './sync/sync-service.js';
 import { startMcpServer } from './mcp-core/server.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 let db: DB | undefined;
 let syncService: BackendSyncService | undefined;
