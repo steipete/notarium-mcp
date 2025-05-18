@@ -109,11 +109,11 @@ describe('SaveInputSchema', () => {
     expect(() => SaveInputSchema.parse(data)).not.toThrow();
   });
   it('should validate with txt_patch', () => {
-    const data = { txt_patch: [{ op: 'add', ln: 1, val: 'hello' }] };
+    const data = { txt_patch: [{ operation: 'addition', line_number: 1, value: 'hello' }] };
     expect(() => SaveInputSchema.parse(data)).not.toThrow();
   });
   it('should invalidate if both txt and txt_patch are provided', () => {
-    const data = { txt: 'hello', txt_patch: [{ op: 'add', ln: 1, val: 'world' }] };
+    const data = { txt: 'hello', txt_patch: [{ operation: 'addition', line_number: 1, value: 'world' }] };
     expect(() => SaveInputSchema.parse(data)).toThrow();
   });
   it('should invalidate if neither txt nor txt_patch is provided', () => {
@@ -141,11 +141,37 @@ describe('SaveInputSchema', () => {
       id: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
       l_ver: 5,
       s_ver: 10,
-      txt_patch: [{ op: 'mod', ln: 1, val: 'Updated first line.' }],
+      txt_patch: [{ operation: 'modification', line_number: 1, value: 'Updated first line.' }],
       tags: ['updated', 'final'],
       trash: false,
     };
     expect(() => SaveInputSchema.parse(data)).not.toThrow();
+  });
+  it('should parse valid SaveInput (new note with text)', () => {
+    const input = { text: 'New note content' };
+    expect(() => SaveInputSchema.parse(input)).not.toThrow();
+  });
+  it('should parse valid SaveInput (new note with patch)', () => {
+    const input = {
+      text_patch: [{ operation: 'addition', line_number: 1, value: 'hello' }],
+    };
+    expect(() => SaveInputSchema.parse(input)).not.toThrow();
+  });
+  it('should fail if both text and text_patch are provided', () => {
+    const input = {
+      text: 'hello',
+      text_patch: [{ operation: 'addition', line_number: 1, value: 'world' }],
+    };
+    expect(() => SaveInputSchema.parse(input)).toThrow();
+  });
+  it('should validate a full valid save input for existing note with text_patch', () => {
+    const input = {
+      id: 'some-uuid',
+      // local_version is required for updates
+      local_version: 1,
+      text_patch: [{ operation: 'modification', line_number: 1, value: 'new content' }],
+    };
+    expect(() => SaveInputSchema.parse(input)).not.toThrow();
   });
 });
 
@@ -204,91 +230,119 @@ describe('ListInputSchema', () => {
     const validInput = {
       q: 'search query tag:urgent before:2023-01-01 after:2022-01-01',
       tags: ['work', 'important'],
-      lim: 50,
+      limit: 50,
       page: 2,
-      trash_s: 1,
-      dt_before: '2023-12-31',
-      dt_after: '2023-01-01',
+      trash_status: 1,
+      date_before: '2023-12-31',
+      date_after: '2023-01-01',
     };
     expect(() => ListInputSchema.parse(validInput)).not.toThrow();
   });
 
-  it('should apply default values for lim and page', () => {
+  it('should apply default values for limit and page', () => {
     const parsed = ListInputSchema.parse({});
-    expect(parsed.lim).toBe(20);
+    expect(parsed.limit).toBe(20);
     expect(parsed.page).toBe(1);
-    expect(parsed.trash_s).toBe(0);
+    expect(parsed.trash_status).toBe(0);
+    expect(parsed.date_before).toBeUndefined();
+    expect(parsed.date_after).toBeUndefined();
   });
 
-  it('should invalidate incorrect lim or page types/values', () => {
-    expect(() => ListInputSchema.parse({ lim: 0 })).toThrow(); // Min 1
-    expect(() => ListInputSchema.parse({ lim: 101 })).toThrow(); // Max 100
+  it('should invalidate incorrect limit or page types/values', () => {
+    expect(() => ListInputSchema.parse({ limit: 0 })).toThrow(); // Min 1
+    expect(() => ListInputSchema.parse({ limit: 101 })).toThrow(); // Max 100
     expect(() => ListInputSchema.parse({ page: 0 })).toThrow(); // Min 1
-    expect(() => ListInputSchema.parse({ lim: 'not-a-number' })).toThrow();
+    expect(() => ListInputSchema.parse({ limit: 'not-a-number' })).toThrow();
   });
 
-  it('should invalidate incorrect trash_s values', () => {
-    expect(() => ListInputSchema.parse({ trash_s: 3 })).toThrow();
-    expect(() => ListInputSchema.parse({ trash_s: '0' })).toThrow();
+  it('should invalidate incorrect trash_status values', () => {
+    expect(() => ListInputSchema.parse({ trash_status: 3 })).toThrow();
+    expect(() => ListInputSchema.parse({ trash_status: '0' })).toThrow();
   });
 
-  it('should invalidate incorrect date formats for dt_before/dt_after', () => {
-    expect(() => ListInputSchema.parse({ dt_before: '2023/12/31' })).toThrow();
-    expect(() => ListInputSchema.parse({ dt_after: '31-12-2023' })).toThrow();
-    expect(() => ListInputSchema.parse({ dt_before: 'not-a-date' })).toThrow();
+  it('should invalidate incorrect date formats for date_before/date_after', () => {
+    expect(() => ListInputSchema.parse({ date_before: '2023/12/31' })).toThrow();
+    expect(() => ListInputSchema.parse({ date_after: '31-12-2023' })).toThrow();
+    expect(() => ListInputSchema.parse({ date_before: 'not-a-date' })).toThrow();
+  });
+
+  it('should parse valid ListInput with all fields', () => {
+    const input = {
+      q: 'search text',
+      tags: ['tag1', 'tag2'],
+      limit: 10,
+      page: 2,
+      trash_status: 1,
+      date_before: '2023-01-01',
+      date_after: '2022-01-01',
+    };
+    const parsed = ListInputSchema.parse(input);
+    // Note: The default values are applied if the fields are NOT in the input object.
+    // If they are in the input object (like limit:10, page:2), those values are used.
+    // The previous expectation that parsed.limit would be 20 was incorrect for this specific test case.
+    expect(parsed.q).toBe('search text');
+    expect(parsed.tags).toEqual(['tag1', 'tag2']);
+    expect(parsed.limit).toBe(10);
+    expect(parsed.page).toBe(2);
+    expect(parsed.trash_status).toBe(1);
+    expect(parsed.date_before).toBe('2023-01-01');
+    expect(parsed.date_after).toBe('2022-01-01');
+
+    // Test default tag behavior
+    expect(ListInputSchema.parse({ q: 'test' }).tags).toBeUndefined();
   });
 });
 
 describe('ManageInputSchema', () => {
   it('should validate get_stats action', () => {
-    const data = { act: 'get_stats' };
+    const data = { action: 'get_stats' };
     expect(() => ManageInputSchema.parse(data)).not.toThrow();
   });
 
   it('should validate reset_cache action', () => {
-    const data = { act: 'reset_cache' };
+    const data = { action: 'reset_cache' };
     expect(() => ManageInputSchema.parse(data)).not.toThrow();
   });
 
   it('should validate trash note action', () => {
     const data = {
-      act: 'trash',
+      action: 'trash',
       id: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
-      l_ver: 1,
+      local_version: 1,
     };
     expect(() => ManageInputSchema.parse(data)).not.toThrow();
   });
 
   it('should validate untrash note action', () => {
     const data = {
-      act: 'untrash',
+      action: 'untrash',
       id: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
-      l_ver: 2,
+      local_version: 2,
     };
     expect(() => ManageInputSchema.parse(data)).not.toThrow();
   });
 
   it('should validate delete_permanently note action', () => {
     const data = {
-      act: 'delete_permanently',
+      action: 'delete_permanently',
       id: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
-      l_ver: 3,
+      local_version: 3,
     };
     expect(() => ManageInputSchema.parse(data)).not.toThrow();
   });
 
   it('should invalidate note action if id is missing', () => {
-    const data = { act: 'trash', l_ver: 1 }; // Missing id
+    const data = { action: 'trash', local_version: 1 }; // Missing id
     expect(() => ManageInputSchema.parse(data)).toThrow();
   });
 
-  it('should invalidate note action if l_ver is missing', () => {
-    const data = { act: 'trash', id: 'f47ac10b-58cc-4372-a567-0e02b2c3d479' }; // Missing l_ver
+  it('should invalidate note action if local_version is missing', () => {
+    const data = { action: 'trash', id: 'f47ac10b-58cc-4372-a567-0e02b2c3d479' }; // Missing local_version
     expect(() => ManageInputSchema.parse(data)).toThrow();
   });
 
   it('should invalidate an unknown action', () => {
-    const data = { act: 'unknown_action' };
+    const data = { action: 'unknown_action' };
     expect(() => ManageInputSchema.parse(data)).toThrow();
   });
 });
@@ -298,7 +352,7 @@ describe('ServerStatsSchema', () => {
     mcp_notarium_version: '1.0.0',
     node_version: 'v18.17.0',
     memory_rss_mb: 123.45,
-    db_encryption: 'enabled' as const,
+    db_encryption: 'enabled',
     db_file_size_mb: 10.5,
     db_total_notes: 100,
     db_last_sync_at: Math.floor(Date.now() / 1000),
@@ -313,14 +367,18 @@ describe('ServerStatsSchema', () => {
     expect(() => ServerStatsSchema.parse(validServerStats)).not.toThrow();
   });
 
-  it('should allow optional fields to be missing', () => {
-    const data = { ...validServerStats };
-    delete (data as any).db_file_size_mb;
-    delete (data as any).db_sync_duration_ms;
-    delete (data as any).db_sync_error_count; // backend_cursor can also be null/undefined
-    delete (data as any).backend_cursor;
-    data.db_last_sync_at = null;
+  it('should allow optional fields to be missing and db_last_sync_at to be null', () => {
+    const data = {
+       mcp_notarium_version: '1.0.0',
+       node_version: 'v18.0.0',
+       memory_rss_mb: 100,
+       db_encryption: 'disabled',
+       db_total_notes: 50,
+       db_last_sync_at: null,
+    };
     expect(() => ServerStatsSchema.parse(data)).not.toThrow();
+    const parsed = ServerStatsSchema.parse(data);
+    expect(parsed.db_last_sync_at).toBeNull();
   });
 
   it('should invalidate if required fields are missing (e.g., mcp_notarium_version)', () => {

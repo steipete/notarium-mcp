@@ -215,10 +215,22 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 **9. `zod` Schemas for Tool I/O Validation**
 (Schemas as fully defined in Version 3.2 specification, with **Note ID fields updated from `z.string().uuid()` to `z.string().min(1)`** to reflect that Simplenote IDs are not always UUIDs. `l_ver` becomes `local_version`, `s_ver` becomes `server_version`, `mod_at` becomes `modified_at`, `crt_at` becomes `created_at`, `rng_ln_s` becomes `range_line_start`, `rng_ln_c` becomes `range_line_count`.)
 
+*   **`ListInputSchema`**: (Input for the `list` tool)
+    *   `query: z.string().optional()` (Full-text search query. Filters like `tag:`, `before:`, `after:` are extracted from this.)
+    *   `tags: z.array(z.string()).optional()` (Filter by notes containing ALL of these tags. Applied in addition to tags from `query_string`.)
+    *   `trash_status: z.number().int().min(0).max(2).optional()` (Filter by trash status: `0` for not trashed (active), `1` for trashed, `2` for any. Defaults to `0` if not specified by `trash:` filter in `query_string`.)
+    *   `date_before: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()` (Filter for notes modified before this UTC date. Applied in addition to `before:` from `query_string`.)
+    *   `date_after: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()` (Filter for notes modified after this UTC date. Applied in addition to `after:` from `query_string`.)
+    *   `sort_by: z.enum(['modified_at', 'created_at']).optional()` (Field to sort by. Defaults to `modified_at` if not an FTS query, or as secondary sort after `rank` for FTS. FTS queries primarily sort by `rank`.)
+    *   `sort_order: z.enum(['ASC', 'DESC']).optional()` (Sort order. Defaults to `DESC`.)
+    *   `limit: z.number().int().min(1).max(100).default(20).optional()`
+    *   `page: z.number().int().min(1).default(1).optional()`
+
 *   **`ListItemSchema`**:
-    *   `id: z.string().min(1)`
-    *   `local_version: z.number().int()` (Local cache version of the note)
-    *   `title_prev: z.string().max(80)`
+    *   `type: z.literal('text')` (Indicates item is plain text)
+    *   `uuid: z.string().min(1)` (The unique ID of the note, maps to `notes.id`)
+    *   `text: z.string().min(1).max(80)` (Preview of the note content, first line, max 80 chars. Non-empty.)
+    *   `local_version: z.number().int()`
     *   `tags: NoteTagsSchema`
     *   `modified_at: UnixTimestampSchema` (Last modified timestamp (epoch seconds))
     *   `trash: z.boolean()`
@@ -231,8 +243,8 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
     *   `modified_at: UnixTimestampSchema`
     *   `created_at: UnixTimestampSchema.optional()`
     *   `trash: z.boolean()`
-    *   `txt_partial: z.boolean().optional()`
-    *   `txt_tot_ln: z.number().int().optional()`
+    *   `text_is_partial: z.boolean().optional()`
+    *   `text_total_lines: z.number().int().optional()`
     *   `range_line_start: z.number().int().positive().optional()`
     *   `range_line_count: z.number().int().nonnegative().optional()`
 *   **`GetInputSchema`**:
@@ -249,9 +261,9 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
     *   `tags: NoteTagsSchema.optional()`
     *   `trash: z.boolean().optional()`
 *   **`PatchOperationSchema`**:
-    *   `op: z.enum(['add', 'mod', 'del'])`
-    *   `ln: z.number().int().min(1)`
-    *   `val: z.string().optional()` (Required for `add`/`mod`)
+    *   `operation: z.enum(['addition', 'modification', 'deletion'])`
+    *   `line_number: z.number().int().min(1)`
+    *   `value: z.string().optional()` (Required for `addition`/`modification`)
 *   **`ManageInputSchema`**: (For note actions like trash, untrash, delete_permanently)
     *   `action: z.enum(['trash', 'untrash', 'delete_permanently', 'get_stats', 'reset_cache'])`
     *   `id: z.string().min(1).optional()` (Required for note actions)
@@ -272,138 +284,74 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 *   **10.1. Tool: `list`**
     *   **Input**: `ListInputSchema`.
     *   **Server Logic (Detailed):**
-        1.  `trash_s_value = input.trash_s === 1 ? 1 : (input.trash_s === 2 ? : 0);` (for SQL IN clause if any)
-        2.  Initialize `SQL_WHERE_CLAUSES = []`, `SQL_PARAMS = []`. If `trash_s_value` is `0` or `1`, add `notes.trash = ?` and param. If ``, no trash clause initially.
+        1.  `trash_s_value = input.trash_status === 1 ? 1 : (input.trash_status === 2 ? undefined : 0);` (Handle `trash_status`: 0 for active, 1 for trashed. If 2 or undefined, initially no trash filter for SQL, but `trash_status` default is 0 if not specified in `query_string` by `trash:` filter. The effective default from Zod is 0. Logic should be: if `input.trash_status` is 0, active; if 1, trashed; if 2, no clause.)
+        2.  Initialize `SQL_WHERE_CLAUSES = []`, `SQL_PARAMS = []`. If `input.trash_status` is `0` or `1`, add `notes.trash = ?` and param. (If `trash_status` is 2, no trash clause is added).
         3.  `effective_tags = new Set(input.tags || [])`.
-        4.  `fts_query_terms = []`.
-        5.  `effective_dt_before = input.dt_before ? new Date(input.dt_before + "T23:59:59.999Z").getTime()/1000 : null;`
-        6.  `effective_dt_after = input.dt_after ? new Date(input.dt_after + "T00:00:00.000Z").getTime()/1000 : null;`
-        7.  **Parse `input.q` (if present):**
-            *   Regex `tag_regex = /tag:(\S+)/g`. For each match, add tag to `effective_tags`. Remove matches from `q`.
-            *   Regex `before_regex = /before:(\d{4}-\d{2}-\d{2})/g`. For each match, parse date. If valid, `effective_dt_before = Math.min(effective_dt_before || Infinity, end_of_day_utc_ts(match_date))`. Remove.
-            *   Regex `after_regex = /after:(\d{4}-\d{2}-\d{2})/g`. For each match, parse date. If valid, `effective_dt_after = Math.max(effective_dt_after || 0, start_of_day_utc_ts(match_date))`. Remove.
-            *   `remaining_q_text = input.q.trim()`. If not empty, this is for FTS.
+        4.  `fts_query_terms = []`. (This line seems unused, can be removed or clarified if it was for a previous FTS formatting idea)
+        5.  `effective_dt_before = input.modified_before_date ? new Date(input.modified_before_date + "T23:59:59.999Z").getTime()/1000 : null;`
+        6.  `effective_dt_after = input.modified_after_date ? new Date(input.modified_after_date + "T00:00:00.000Z").getTime()/1000 : null;`
+        7.  **Parse `input.query_string` (if present):**
+            *   Regex `tag_regex = /tag:(\S+)/g`. For each match, add tag to `effective_tags`. Remove matches from `query_string`.
+            *   Regex `before_regex = /before:(\d{4}-\d{2}-\d{2})/g`. For each match, parse date. If valid, `effective_dt_before = Math.min(effective_dt_before || Infinity, end_of_day_utc_ts(match_date))`. Remove from `query_string`.
+            *   Regex `after_regex = /after:(\d{4}-\d{2}-\d{2})/g`. For each match, parse date. If valid, `effective_dt_after = Math.max(effective_dt_after || 0, start_of_day_utc_ts(match_date))`. Remove from `query_string`.
+            *   `remaining_query_text = input.query_string.trim()`. If not empty, this is for FTS.
         8.  **Build SQL `WHERE` clauses:**
             *   For each tag in `effective_tags`: `SQL_WHERE_CLAUSES.push("EXISTS (SELECT 1 FROM json_each(notes.tags) WHERE value = ?)")`, `SQL_PARAMS.push(tag)`.
             *   If `effective_dt_before`: `SQL_WHERE_CLAUSES.push("notes.modified_at < ?")`, `SQL_PARAMS.push(effective_dt_before)`.
             *   If `effective_dt_after`: `SQL_WHERE_CLAUSES.push("notes.modified_at > ?")`, `SQL_PARAMS.push(effective_dt_after)`.
         9.  **FTS5 Query Part:**
-            *   If `remaining_q_text`: `fts_match_clause = "notes.rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts.text MATCH ?)"`. `SQL_WHERE_CLAUSES.push(fts_match_clause)`. `SQL_PARAMS.push(format_for_fts(remaining_q_text))`. (Format might involve joining terms with AND, escaping).
-            *   `ORDER_BY = remaining_q_text ? "rank, notes.modified_at DESC" : "notes.modified_at DESC"`. (SQLite FTS returns `rank` implicitly).
+            *   If `remaining_query_text`: `fts_match_clause = "notes.rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts.text MATCH ?)"`. `SQL_WHERE_CLAUSES.push(fts_match_clause)`. `SQL_PARAMS.push(format_for_fts(remaining_query_text))`. (Format might involve joining terms with AND, escaping).
+            *   Determine `ORDER_BY` clause:
+                *   `let orderBySQL = "";`
+                *   `const defaultSortField = "notes.modified_at";`
+                *   `const defaultSortOrder = "DESC";`
+                *   `let sortFieldInput = input.sort_by;`
+                *   `let sortOrderInput = input.sort_order;`
+
+                *   `let resolvedSortField = defaultSortField;`
+                *   `if (sortFieldInput === 'created_at') resolvedSortField = 'notes.created_at';`
+                *   `// If sortFieldInput is 'modified_at' or undefined, it defaults to notes.modified_at`
+
+                *   `let resolvedSortOrder = sortOrderInput || defaultSortOrder;`
+
+                *   `if (remaining_query_text) {`
+                *   `  // For FTS queries, rank is primary. User-defined sort is secondary, or modified_at DESC by default.`
+                *   `  orderBySQL = \`rank, \${resolvedSortField} \${resolvedSortOrder}\`;`
+                *   `} else {`
+                *   `  // For non-FTS queries, user-defined sort is primary, or modified_at DESC by default.`
+                *   `  orderBySQL = \`\${resolvedSortField} \${resolvedSortOrder}\`;`
+                *   `}`
+                *   `ORDER_BY = orderBySQL;` (SQLite FTS returns `rank` implicitly when matching).
         10. **Count Query:** `SELECT COUNT(*) as total FROM notes WHERE ${SQL_WHERE_CLAUSES.join(" AND ") || '1=1'};` (Execute with `SQL_PARAMS` excluding FTS term if no FTS query). Get `total_items`.
         11. **Data Query:** `SELECT notes.id, notes.local_version, notes.text, notes.tags, notes.modified_at, notes.trash FROM notes WHERE ${SQL_WHERE_CLAUSES.join(" AND ") || '1=1'} ORDER BY ${ORDER_BY} LIMIT ? OFFSET ?;`. (Execute with all `SQL_PARAMS`, plus `input.limit`, `(input.page - 1) * input.limit`).
-        12. **Process Rows:** For each row, generate `title_prev` (first non-empty trimmed line of `notes.text`, max 80 chars; `""` if note empty/whitespace). Map to `ListItemSchema`. This includes mapping DB `local_version` to API `local_version`, DB `server_version` to API `server_version`, DB `modified_at` to API `modified_at`, DB `created_at` to API `created_at`, and DB `text` to API `text` (where applicable for `NoteDataSchema`).
+        12. **Process Rows:** For each row, generate `titlePreviewString` (first non-empty trimmed line of `notes.text`, max 80 chars; `"(empty note)"` if note empty/whitespace). Map to `ListItemSchema` by populating `type` with `'text'`, `uuid` with `notes.id`, and `text` directly with `titlePreviewString`.
             *   **Note:** Use `ListItemSchema.safeParse()` to handle potential data inconsistencies. Log and skip invalid items.
-    *   **Output**: `ListOutputSchema` (`items: ListItem[]`, `next_page?: number`). Calculate `next_page`.
+    *   **Output**: `ListOutputSchema` (`content: ListItem[]`, `next_page?: number`). Calculate `next_page`.
 *   **10.2. Tool: `get`**
     *   (As per v3.2. Handles `range_line_start`, `range_line_count`. If range end exceeds lines, returns to actual end. Sets `txt_partial`, `txt_tot_ln`). Input uses `local_version`. Output maps DB `local_version` to API `local_version`.
 *   **10.3. Tool: `save`**
-    *   (As per v3.2. `local_version` required for updates. Handles `text` OR `text_patch`. `text_patch` line numbers 1-indexed, relative to `local_version`'s content state of `text`. Server processes `del` (high to low ln), `mod`, `add` (low to high ln). Synchronous backend write using `server_version` from local DB or input. Updates local cache only on Simperium success with Simperium's response object, prioritizing `response_note.version` for new `server_version`. Handles Simperium 409/412 version conflict with specific `NotariumError` and resolution hint). Input uses `local_version`, `server_version`, `text` or `text_patch`. Output maps to `local_version`, `server_version`, `text`.
+    *   (As per v3.2. `local_version` required for updates. Handles `text` OR `text_patch`. `text_patch` line numbers (field: `line_number`) 1-indexed, relative to `local_version`'s content state of `text`. Server processes `deletion` (high to low `line_number`), `modification`, `addition` (low to high `line_number`). Synchronous backend write using `server_version` from local DB or input. Updates local cache only on Simperium success with Simperium's response object, prioritizing `response_note.version` for new `server_version`. Handles Simperium 409/412 version conflict with specific `NotariumError` and resolution hint). Input uses `local_version`, `server_version`, `text` or `text_patch`. Output maps to `local_version`, `server_version`, `text`.
 *   **10.4. Tool: `manage`**
-    *   (As per v3.2. Note actions are sync backend-first. `local_version` mandatory for note actions. `get_stats` populates full `ServerStatsSchema`, including `mcp_notarium_version` from `package.json`, `node_version` from `process.version`, `memory_rss_mb` from `process.memoryUsage().rss`. `db_encryption` status will be 'disabled' or 'unavailable' reflecting the `sql.js` setup. `reset_cache` deletes DB files, sets `global.fullResyncRequiredByReset = true`). Input for note actions uses `local_version` and `action`. Output includes `new_local_version` and `new_server_version`.
+    *   **FTS5 for Search (V1):** SQLite's FTS5 (provided by `sql.js`) is used as the primary search mechanism for text in notes. Advanced application-level fuzzy matching (e.g., `fuse.js` for typo tolerance) is deferred beyond V1 to keep initial complexity low. Keyword filters (`tag:`, `before:`, `after:`) are extracted from the query string by the server.
+    *   **Line-Based Patching for `save`:** Chosen as a compromise between sending full note content (inefficient for LLMs with large notes) and complex character-level diffs. The `text_patch` with `{operation: 'addition' | 'modification' | 'deletion', line_number, value}` format is deemed reasonably understandable and implementable for LLMs and the server.
+    *   **No Database Encryption (Current `sql.js` Setup):** The current implementation with `sql.js` does not encrypt the persisted database file. This simplifies setup by avoiding native dependencies required for SQLCipher, but offers less local data protection.
 
 **11. NPM Dependencies & Project Setup**
-*   **Production:** `axios` (or `node-fetch`), `sql.js` (and its `.wasm` file), `zod`, `pino`, `uuid`, `dotenv`.
-*   **Development:** `@types/...` for all used packages, `typescript`, `tsup` or `esbuild` (for compilation/bundling), `pino-pretty`, testing libraries (`jest` or `vitest`, `@types/jest` or `@types/vitest`), `eslint`, `prettier`.
-*   `package.json` scripts: `build`, `start`, `dev` (with `ts-node-dev` or similar), `lint`, `test`.
 
 **12. Logging (`pino`)**
-*   **Initialization (`src/logging.ts`):**
-    ```typescript
-    import pino from 'pino';
-    import pretty from 'pino-pretty'; // Only if textual logs are desired for TTY
 
-    const isTTY = process.stdout.isTTY;
-    const logLevel = process.env.LOG_LEVEL || 'info';
-    const logFilePath = process.env.LOG_FILE_PATH;
-
-    const streams = [];
-    if (isTTY && process.env.LOG_FORMAT !== 'json') {
-      streams.push({ stream: pretty({ colorize: true, sync: true }), level: logLevel });
-    } else {
-      streams.push({ stream: process.stdout, level: logLevel }); // Default to structured (JSON or text) on stdout
-    }
-
-    if (logFilePath) {
-      streams.push({ stream: pino.destination(logFilePath), level: logLevel });
-    }
-
-    const logger = pino({
-      level: logLevel,
-      base: { pid: process.pid, hostname: require('os').hostname() }, // Add standard base fields
-      timestamp: pino.stdTimeFunctions.isoTime, // ISO8601 timestamps
-    }, pino.multistream(streams));
-
-    export default logger;
-    ```
-*   **Usage:** Import logger instance. Use `logger.info({ trace_id, tool_name, ... }, "Message")`.
-*   **Redaction:** Redact `SIMPLENOTE_PASSWORD` and `DB_ENCRYPTION_KEY` if they ever appear in log context (they shouldn't with proper handling).
-
-**13. Error Handling (`NotariumError` Hierarchy)**
-*   **Base Class (`src/errors.ts`):**
-    ```typescript
-    export class NotariumError extends Error {
-      public readonly category: 'AUTH' | 'VALIDATION' | 'NOT_FOUND' | 'BACKEND_API' | 'INTERNAL' | 'TIMEOUT';
-      public readonly httpStatusCode: number;
-      public readonly user_message: string;
-      public readonly details?: Record<string, any>;
-      public readonly resolution_hint?: string;
-      public readonly originalError?: Error;
-      public readonly subcategory?: string;
-
-      constructor(params: { /* as defined in v3.2 */ message: string; /* ... */ }) {
-        super(params.message);
-        this.name = this.constructor.name;
-        // ... assign other properties
-      }
-      public toDict(): object { /* ... returns structured error for MCP error.data */ }
-    }
-    ```
-*   **Subclasses:** `NotariumAuthError`, `NotariumValidationError`, `NotariumResourceNotFoundError`, `NotariumBackendError` (with specific subcategories like `conflict`, `timeout`, `rate_limit`), `NotariumInternalError`. Each pre-sets category and `httpStatusCode`.
-*   Tool handlers `try...catch` specific errors and general `Error`, convert to appropriate `NotariumError`, and throw that. The MCP Server Core is assumed to catch these and format the JSON-RPC error response.
+**13. Error Handling (`NotariumError` Hierarchy & MCP Mapping)**
 
 **14. Performance Metrics Collection & Exposure**
-(As per v3.2: `Backend Sync Service` updates metrics in `sync_metadata`. `manage` tool with `act: 'get_stats'` reads from this and adds runtime stats like versions and memory).
 
 **15. Internationalization & Time Handling**
-*   **FTS Tokenizer:** `porter unicode61 remove_diacritics 1`.
-*   **Timestamps:** All internal and API-exposed are UNIX epoch seconds (number), UTC. Query filter dates (`before:/after: YYYY-MM-DD`) are interpreted as start/end of UTC day (e.g., `YYYY-MM-DDT00:00:00.000Z` and `YYYY-MM-DDT23:59:59.999Z`).
 
 **16. Concurrency Assumptions**
-*   MCP Server Core framework MUST process incoming MCP requests serially for a single MCP Notarium instance.
 
 **17. Graceful Shutdown & Exit Codes**
-*   (As per v3.2: `SIGINT`/`SIGTERM` handlers, set global shutdown flag, allow in-progress tool calls to finish, close DB, flush logs. Exit 0 for normal, Exit 1 for critical startup errors).
 
-**18. Design Decisions & Rationale**
-    *   **Synchronous Backend Writes for Tools:** Chosen over optimistic local writes to provide immediate and reliable success/failure feedback to the LLM, crucial for agent workflows. Assumes LLM client and MCP Notarium are online. Mitigates complex disconnected error reporting and data divergence issues. Increases write latency but prioritizes data integrity from LLM's perspective.
-    *   **SQLite as Pure Cache with Auto-Reset:** If credentials (`SIMPLENOTE_USERNAME`) change, or if the DB is corrupt or schema mismatches, the local SQLite cache is automatically deleted and rebuilt. This is acceptable because the cache is not the source of truth and Simplenote is. This simplifies recovery for the user in an `npx` environment.
-    *   **Environment Variables for Credentials:** Selected over interactive setup (like `keytar`) due to the `npx` execution model and declarative configuration via a host app's JSON file. User is responsible for securing their config file / environment. `SIMPLENOTE_` prefix for backend-specific creds, no prefix or `DB_` for Notarium-specific ones.
-    *   **Limited Toolset & Overloaded `manage` Tool:** To adhere to constraints on the number of exposed MCP tools, functionality like server stats and cache reset is consolidated under the `manage` tool, despite minor semantic impurity. This prioritizes token efficiency and limits for host applications.
-    *   **FTS5 for Search (V1):** SQLite's FTS5 (provided by `sql.js`) is used as the primary search mechanism for text in notes. Advanced application-level fuzzy matching (e.g., `fuse.js` for typo tolerance) is deferred beyond V1 to keep initial complexity low. Keyword filters (`tag:`, `before:`, `after:`) are extracted from the query string by the server.
-    *   **Line-Based Patching for `save`:** Chosen as a compromise between sending full note content (inefficient for LLMs with large notes) and complex character-level diffs. The `text_patch` with `{op, ln, val}` format is deemed reasonably understandable and implementable for LLMs and the server.
-    *   **No Database Encryption (Current `sql.js` Setup):** The current implementation with `sql.js` does not encrypt the persisted database file. This simplifies setup by avoiding native dependencies required for SQLCipher, but offers less local data protection.
-    *   **Use of `sql.js` (SQLite WASM):** Chosen for potentially broader platform compatibility (e.g., environments where native Node.js addons for `better-sqlite3` might be difficult to build or deploy) and to avoid native dependencies. The trade-off includes differences in direct file I/O patterns and lack of built-in SQLCipher support in the typical `sql.js` package.
-    *   **Textual Logging by Default for `stdio`:** Prioritizes human readability for typical MCP client interaction, with JSON as an option for advanced users or different logging transports.
-    *   **No Server Port by Default:** Assumes `stdio` communication typical for MCP desktop integrations, simplifying configuration.
-    *   **Hardcoded Simplenote App ID/API Key:** These are specific to client applications interfacing with Simperium for Simplenote and are not user-specific secrets.
-    *   **Self-Rescheduling `setTimeout` for Sync Loop:** Preferred over `setInterval` to prevent overlapping sync operations if one cycle takes longer than the interval.
+**18. Design Decisions & Rationale (Addressing past Q&A)**
 
 **19. Known Limitations (V1)**
-    *   **Hard Delete Detection:** Notes hard-deleted from Simperium by *other* clients will not be automatically removed from the local cache by the periodic delta sync. They will persist until a manual cache reset or an automatic reset due to credential/key changes.
-    *   **Search Typo-Tolerance:** Search via `q` relies on FTS5, which has some prefix matching but not advanced typo correction like Levenshtein distance.
-    *   **Schema Migrations:** No automated, non-destructive schema migrations for the SQLite database. Schema changes will require deleting the old cache.
-    *   **Single User Focus:** Designed for a single Simplenote account per MCP Notarium instance.
-    *   **Tag Search via FTS:** Tags are filtered via SQL `WHERE` clauses on the JSON `tags` column, not directly integrated into the main FTS5 index of note content. This means combined FTS content search + tag search relies on SQLite's query optimizer.
-    *   **Database Unencrypted:** The local SQLite cache file is not encrypted by MCP Notarium in the current `sql.js`-based implementation.
 
 **20. Future Considerations (Post-V1)**
-    *   Advanced fuzzy search integration (`fuse.js`).
-    *   Periodic full cache reconciliation to detect hard deletes.
-    *   Automated, non-destructive SQLite schema migrations.
-    *   Support for other note-taking backends (would require abstracting the `Backend API Client` and `Backend Sync Service`).
-    *   Exposing metrics via a Prometheus-compatible HTTP endpoint.
-    *   More sophisticated conflict resolution for the background sync service.
-    *   Implementing MCP "Resources" and "Prompts" more fully if beneficial.
-
-This ultra-detailed specification should provide a very solid blueprint for implementation.

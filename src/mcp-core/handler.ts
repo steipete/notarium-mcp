@@ -139,46 +139,53 @@ export async function handleMcpRequest(
           {
             name: 'list_notes',
             title: 'List notes',
-            description: 'Lists notes, allowing for filtering by IDs, modification date, and tags. Supports pagination to handle large sets of notes.',
+            description: 'Lists notes, allowing for filtering by text query, tags, modification date, and trash status. Supports pagination and sorting.',
             inputSchema: {
               type: 'object',
               properties: {
-                ids: { type: 'array', items: { type: 'string' }, description: 'Optional list of note IDs to filter by' },
-                limit: { type: 'integer', description: 'Maximum number of notes to return' },
-                since: { type: 'number', description: 'Timestamp to filter notes modified since' },
-                tags: { type: 'array', items: { type: 'string' }, description: 'Tags to filter by' },
-                date_before: { type: 'string', format: 'date', description: 'Filter notes modified before this date (YYYY-MM-DD)' },
-                date_after: { type: 'string', format: 'date', description: 'Filter notes modified after this date (YYYY-MM-DD)' }
+                query: { type: 'string', description: 'Full-text search query. Can include filters like tag:yourtag, before:YYYY-MM-DD, after:YYYY-MM-DD.' },
+                tags: { type: 'array', items: { type: 'string' }, description: 'Filter by notes containing ALL of these tags.' },
+                trash_status: { type: 'integer', enum: [0, 1, 2], description: 'Filter by trash status (0: active, 1: trashed, 2: any).' },
+                date_before: { type: 'string', format: 'date', description: 'Filter notes modified before this UTC date (YYYY-MM-DD).' },
+                date_after: { type: 'string', format: 'date', description: 'Filter notes modified after this UTC date (YYYY-MM-DD).' },
+                sort_by: { type: 'string', enum: ['modified_at', 'created_at'], description: 'Field to sort by.' },
+                sort_order: { type: 'string', enum: ['ASC', 'DESC'], description: 'Sort order.' },
+                limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum number of notes to return.' },
+                page: { type: 'integer', minimum: 1, description: 'Page number for pagination.' }
               }
             },
             schema: {
               params: {
                 type: 'object',
                 properties: {
-                  ids: { type: 'array', items: { type: 'string' }, description: 'Optional list of note IDs to filter by' },
-                  limit: { type: 'integer', description: 'Maximum number of notes to return' },
-                  since: { type: 'number', description: 'Timestamp to filter notes modified since' },
-                  tags: { type: 'array', items: { type: 'string' }, description: 'Tags to filter by' },
-                  date_before: { type: 'string', format: 'date', description: 'Filter notes modified before this date (YYYY-MM-DD)' },
-                  date_after: { type: 'string', format: 'date', description: 'Filter notes modified after this date (YYYY-MM-DD)' }
+                  query: { type: 'string', description: 'Full-text search query. Can include filters like tag:yourtag, before:YYYY-MM-DD, after:YYYY-MM-DD.' },
+                  tags: { type: 'array', items: { type: 'string' }, description: 'Filter by notes containing ALL of these tags.' },
+                  trash_status: { type: 'integer', enum: [0, 1, 2], description: 'Filter by trash status (0: active, 1: trashed, 2: any). Default: 0.' },
+                  date_before: { type: 'string', format: 'date', description: 'Filter for notes modified before this UTC date (YYYY-MM-DD).' },
+                  date_after: { type: 'string', format: 'date', description: 'Filter for notes modified after this UTC date (YYYY-MM-DD).' },
+                  sort_by: { type: 'string', enum: ['modified_at', 'created_at'], description: 'Field to sort by. Default: modified_at.' },
+                  sort_order: { type: 'string', enum: ['ASC', 'DESC'], description: 'Sort order. Default: DESC.' },
+                  limit: { type: 'integer', minimum: 1, maximum: 100, default: 20, description: 'Maximum number of notes to return.' },
+                  page: { type: 'integer', minimum: 1, default: 1, description: 'Page number for pagination.' }
                 }
               },
               result: {
                 type: 'object',
                 properties: {
-                  items: {
+                  content: {
                     type: 'array',
                     items: {
                       type: 'object',
                       properties: {
-                        id: { type: 'string' },
+                        type: { type: 'string', enum: ['text'] },
+                        uuid: { type: 'string' },
+                        text: { type: 'string' },
                         local_version: { type: 'integer' },
-                        title_prev: { type: 'string' },
                         tags: { type: 'array', items: { type: 'string' } },
                         modified_at: { type: 'integer' },
                         trash: { type: 'boolean' }
                       },
-                      required: ['id','local_version','title_prev','tags','modified_at','trash']
+                      required: ['type','uuid','text','local_version','tags','modified_at','trash']
                     }
                   },
                   total_items: { type: 'integer' },
@@ -186,7 +193,7 @@ export async function handleMcpRequest(
                   total_pages: { type: 'integer' },
                   next_page: { type: 'integer' }
                 },
-                required: ['items','total_items','current_page','total_pages']
+                required: ['content','total_items','current_page','total_pages']
               }
             }
           },
@@ -236,11 +243,11 @@ export async function handleMcpRequest(
               definitions: {
                 patchOperation: {
                   type: 'object',
-                  required: ['op', 'ln'],
+                  required: ['operation', 'line_number'],
                   properties: {
-                    op: { type: 'string', enum: ['add', 'mod', 'del'] },
-                    ln: { type: 'integer', minimum: 1 },
-                    val: { type: 'string' }
+                    operation: { type: 'string', enum: ['addition', 'modification', 'deletion'] },
+                    line_number: { type: 'integer', minimum: 1 },
+                    value: { type: 'string' }
                   }
                 }
               },

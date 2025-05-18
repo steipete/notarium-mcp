@@ -34,49 +34,40 @@ export function applyTextPatch(
 
   const lines = originalText === '' ? [] : originalText.split('\n');
 
-  const delOps = patches.filter((p) => p.op === 'del').sort((a, b) => b.ln - a.ln);
-  const modOps = patches.filter((p) => p.op === 'mod');
-  const addOps = patches.filter((p) => p.op === 'add').sort((a, b) => a.ln - b.ln);
+  const delOps = patches.filter((p) => p.operation === 'deletion').sort((a, b) => b.line_number - a.line_number);
+  const modOps = patches.filter((p) => p.operation === 'modification');
+  const addOps = patches.filter((p) => p.operation === 'addition').sort((a, b) => a.line_number - b.line_number);
 
-  for (const op of delOps) {
-    const lineIndex = op.ln - 1;
+  for (const patch of delOps) {
+    const lineIndex = patch.line_number - 1;
     if (lineIndex >= 0 && lineIndex < lines.length) {
       lines.splice(lineIndex, 1);
     }
   }
 
-  for (const op of modOps) {
-    const lineIndex = op.ln - 1;
+  for (const patch of modOps) {
+    const lineIndex = patch.line_number - 1;
     if (lineIndex >= 0 && lineIndex < lines.length) {
-      lines[lineIndex] = op.val || '';
+      lines[lineIndex] = patch.value || '';
     }
   }
 
   // Refined add operations logic
-  // The key is that `op.ln` refers to the line number in the state of the document *before any add operations in this batch began*,
-  // but *after* all deletes and mods for this patch run are complete.
-  // However, the spec says "add (low to high ln)", implying subsequent adds see the effect of prior adds.
-  // The `offset` variable correctly handles the shifting indices due to prior `add` operations within the same batch.
+  // The key is that `patch.line_number` refers to the desired line number in the *final* state *after this add op*,
+  // but before subsequent add ops. Sorting add ops by line_number ensures this behavior.
+  // We iterate and insert, adjusting indices for subsequent adds is implicitly handled by splice.
   let addOffset = 0;
-  for (const op of addOps) {
-    // op.ln is 1-indexed. targetLineIndex is 0-indexed.
-    // The target line for insertion is relative to the current state of `lines` array,
-    // considering previous additions in this loop.
-    const targetLineIndex = op.ln - 1 + addOffset;
+  for (const patch of addOps) {
+    const targetLineIndex = patch.line_number - 1 + addOffset;
 
-    if (targetLineIndex <= 0) {
-      // Add to the beginning (or if ln=0, also beginning)
-      lines.unshift(op.val || '');
+    if (targetLineIndex < 0) {
+      lines.unshift(patch.value || '');
       addOffset++;
     } else if (targetLineIndex > lines.length) {
-      // Add to the very end if ln is far beyond current length
-      lines.push(op.val || '');
-      // No offset increment here, as we are appending. Next op.ln will be relative to new length effectively.
-      // Correction: offset *should* increment as the conceptual list has grown by one line for subsequent patches in this addOp batch.
+      lines.push(patch.value || '');
       addOffset++;
     } else {
-      // Insert before the line at targetLineIndex (which was op.ln originally)
-      lines.splice(targetLineIndex, 0, op.val || '');
+      lines.splice(targetLineIndex, 0, patch.value || '');
       addOffset++;
     }
   }

@@ -15,11 +15,12 @@ export const NoteTagSchema = z.string().min(1, 'Tag cannot be empty').max(100, '
 export const NoteTagsSchema = z.array(NoteTagSchema).max(100, 'Too many tags'); // Max 100 tags per note as a guess
 
 export const ListItemSchema = z.object({
-  id: z.string().min(1),
-  local_version: z.number().int(), // Local cache version of the note
-  title_prev: z.string().max(80),
+  type: z.literal('text').default('text'),
+  uuid: z.string().min(1), // Maps to note ID
+  text: z.string().min(1).max(80, 'Preview text must be 1-80 characters'),
+  local_version: z.number().int(),
   tags: NoteTagsSchema,
-  modified_at: UnixTimestampSchema, // Last modified timestamp (epoch seconds)
+  modified_at: UnixTimestampSchema,
   trash: z.boolean(),
 });
 export type ListItem = z.infer<typeof ListItemSchema>;
@@ -44,30 +45,32 @@ export type NoteData = z.infer<typeof NoteDataSchema>;
 // --- Tool: list ---
 // Spec 10.1. Tool `list`
 export const ListInputSchema = z.object({
-  q: z.string().optional(),
-  tags: z.array(NoteTagSchema).optional(),
-  limit: z.number().int().min(1).max(100).default(20),
-  page: z.number().int().min(1).default(1),
-  trash_s: z
+  query: z.string().optional(), // Full-text search query. Filters like `tag:`, `before:`, `after:` are extracted from this.
+  tags: z.array(NoteTagSchema).optional(), // Filter by notes containing ALL of these tags. Applied in addition to tags from `query_string`.
+  trash_status: z
     .union([
       z.literal(0), // Not in trash
       z.literal(1), // In trash
       z.literal(2), // Either (include trash)
     ])
-    .default(0), // 0: not in trash, 1: in trash, 2: either
+    .default(0), // Default to not in trash. `0` for active, `1` for trashed, `2` for any.
   date_before: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Invalid date format, use YYYY-MM-DD')
-    .optional(), // YYYY-MM-DD
+    .optional(), // Filter for notes modified before this UTC date. Applied in addition to `before:` from `query_string`.
   date_after: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Invalid date format, use YYYY-MM-DD')
-    .optional(), // YYYY-MM-DD
+    .optional(), // Filter for notes modified after this UTC date. Applied in addition to `after:` from `query_string`.
+  sort_by: z.enum(['modified_at', 'created_at']).optional(), // Field to sort by. Defaults to `modified_at`.
+  sort_order: z.enum(['ASC', 'DESC']).optional(), // Sort order. Defaults to `DESC`.
+  limit: z.number().int().min(1).max(100).default(20).optional(),
+  page: z.number().int().min(1).default(1).optional(),
 });
 export type ListInput = z.infer<typeof ListInputSchema>;
 
 export const ListOutputSchema = z.object({
-  items: z.array(ListItemSchema),
+  content: z.array(ListItemSchema),
   total_items: z.number().int(),
   current_page: z.number().int(),
   total_pages: z.number().int(),
@@ -92,19 +95,19 @@ export type GetOutput = z.infer<typeof GetOutputSchema>;
 // Spec 10.3. Tool `save`
 
 const PatchOperationObjectSchema = z.object({
-  op: z.enum(['add', 'mod', 'del']),
-  ln: z.number().int().min(1), // 1-indexed line number
-  val: z.string().optional(), // Required for 'add' and 'mod', ignored for 'del'
+  operation: z.enum(['addition', 'modification', 'deletion']),
+  line_number: z.number().int().min(1), // 1-indexed line number
+  value: z.string().optional(), // Required for 'addition' and 'modification', ignored for 'deletion'
 });
 
 export const PatchOperationSchema = PatchOperationObjectSchema.refine(
   (data: z.infer<typeof PatchOperationObjectSchema>) => {
-    if ((data.op === 'add' || data.op === 'mod') && typeof data.val !== 'string') {
+    if ((data.operation === 'addition' || data.operation === 'modification') && typeof data.value !== 'string') {
       return false;
-    } // val is required for add/mod
+    } // value is required for addition/modification
     return true;
   },
-  { message: "'val' is required for 'add' and 'mod' operations" },
+  { message: "'value' is required for 'addition' and 'modification' operations" },
 );
 
 const SaveInputObjectSchema = z.object({

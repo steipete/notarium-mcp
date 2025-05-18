@@ -19,22 +19,12 @@ import {
   NotariumInternalError,
 } from '../errors.js';
 import fs from 'fs';
-// import path from 'path'; // path might become unused, will check
 import { z } from 'zod';
 import {
-  // getSimperiumApiClient, // This was commented out in original snippet
   saveNote as simperiumSaveNote,
   SimperiumNotePayload,
 } from '../backend/simperium-api.js';
 import { cacheFilePath } from '../cache/sqlite.js'; // Import the correct path function
-
-// Helper function to get DB file path - REMOVED
-// function getDbFilePathInternal(): string {
-//   const dbFileName = appConfig.DB_ENCRYPTION_KEY
-//     ? 'notarium_cache.sqlite.encrypted'
-//     : 'notarium_cache.sqlite';
-//   return path.resolve(process.cwd(), dbFileName);
-// }
 
 function deleteDatabaseFilesInternal(dbFilePath: string): void {
   logger.info(`MANAGE TOOL: Deleting database files associated with ${dbFilePath}`);

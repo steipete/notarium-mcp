@@ -10,19 +10,19 @@ import { NotariumDbError } from '../errors.js';
 export async function handleList(params: ListInput, db: DB): Promise<ListOutput> {
   logger.debug({ params }, 'Handling list tool request');
 
-  const { q, tags, limit = 20, page = 1, trash_s = 0, date_before, date_after } =
+  const { query, tags, limit = 20, page = 1, trash_status = 0, date_before, date_after, sort_by, sort_order } =
     params;
 
   const sqlWhereClauses: string[] = [];
   const sqlParams: (string | number)[] = [];
 
-  // 1. trash_s value (Spec 10.1.Server Logic.1)
-  // trash_s: 0 = not in trash, 1 = in trash, 2 = either
-  if (trash_s === 0) {
+  // 1. trash_status value (Spec 10.1.Server Logic.1)
+  // trash_status: 0 = not in trash, 1 = in trash, 2 = either
+  if (trash_status === 0) {
     sqlWhereClauses.push('notes.trash = 0');
-  } else if (trash_s === 1) {
+  } else if (trash_status === 1) {
     sqlWhereClauses.push('notes.trash = 1');
-  } // if trash_s is 2, no clause is added for trash status.
+  } // if trash_status is 2, no clause is added for trash status.
 
   // 3. effective_tags (Spec 10.1.Server Logic.3)
   const effectiveTags = new Set<string>(tags || []);
@@ -38,9 +38,9 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
     ? new Date(`${date_after}T00:00:00.000Z`).getTime() / 1000
     : null;
 
-  // 7. Parse input.q (Spec 10.1.Server Logic.7)
-  let remaining_query_text = q || '';
-  if (q) {
+  // 7. Parse input.query (Spec 10.1.Server Logic.7)
+  let remaining_query_text = query || '';
+  if (query) {
     // tag: extraction
     const tagRegex = /tag:(\S+)/g;
     let match;
@@ -95,7 +95,32 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
   }
 
   const whereClause = sqlWhereClauses.length > 0 ? sqlWhereClauses.join(' AND ') : '1=1';
-  const orderBy = remaining_query_text ? 'rank, notes.modified_at DESC' : 'notes.modified_at DESC'; // SQLite FTS provides `rank` implicitly
+
+  // Determine ORDER_BY clause (Spec 10.1.Server Logic.9)
+  let orderBySQL = "";
+  const defaultSortField = "notes.modified_at";
+  const defaultSortOrder = "DESC";
+  
+  let resolvedSortField = defaultSortField;
+  if (sort_by === 'created_at') {
+    resolvedSortField = 'notes.created_at';
+  } else if (sort_by === 'modified_at') {
+    // This case is explicitly handled as it's a valid sort_by option, 
+    // even if it's the default field.
+    resolvedSortField = 'notes.modified_at';
+  }
+  // If sort_by is undefined, resolvedSortField remains defaultSortField ('notes.modified_at')
+
+  const resolvedSortOrder = sort_order || defaultSortOrder;
+
+  if (remaining_query_text) {
+    // For FTS queries, rank is primary. User-defined sort is secondary.
+    orderBySQL = `rank, ${resolvedSortField} ${resolvedSortOrder}`;
+  } else {
+    // For non-FTS queries, user-defined sort is primary.
+    orderBySQL = `${resolvedSortField} ${resolvedSortOrder}`;
+  }
+  // END Determine ORDER_BY clause
 
   // 10. Count Query (Spec 10.1.Server Logic.10)
   const countSql = `SELECT COUNT(*) as total FROM notes WHERE ${whereClause};`;
@@ -124,7 +149,7 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
 
   // 11. Data Query (Spec 10.1.Server Logic.11)
   const offset = (page - 1) * limit;
-  const dataSql = `SELECT notes.id, notes.local_version, notes.text, notes.tags, notes.modified_at, notes.trash FROM notes WHERE ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?;`;
+  const dataSql = `SELECT notes.id, notes.local_version, notes.text, notes.tags, notes.modified_at, notes.trash FROM notes WHERE ${whereClause} ORDER BY ${orderBySQL} LIMIT ? OFFSET ?;`;
   const finalSqlParams = [...sqlParams, limit, offset];
 
   let rows: any[];
@@ -152,7 +177,10 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
 
   // 12. Process Rows (Spec 10.1.Server Logic.12)
   const items = rows.map((row) => {
-    const titlePrev = (row.text.split('\n')[0] || '').trim().substring(0, 80);
+    let titlePreviewString = (row.text.split('\n')[0] || '').trim().substring(0, 80);
+    if (titlePreviewString.length === 0) {
+      titlePreviewString = '(empty note)';
+    }
     let parsedTags: string[];
     try {
       parsedTags = JSON.parse(row.tags);
@@ -164,9 +192,10 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
       );
     }
     return ListItemSchema.parse({
-      id: row.id,
+      type: 'text',
+      uuid: row.id,
+      text: titlePreviewString,
       local_version: row.local_version,
-      title_prev: titlePrev,
       tags: parsedTags,
       modified_at: Math.floor(row.modified_at),
       trash: !!row.trash,
@@ -176,13 +205,17 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
   const totalPages = Math.ceil(totalItems / limit);
   const nextPage = page * limit < totalItems ? page + 1 : undefined;
 
-  return {
-    items,
+  const resultPayload = {
+    content: items,
     total_items: totalItems,
     current_page: page,
     total_pages: totalPages,
     next_page: nextPage,
   };
+
+  logger.debug({ resultPayload }, 'list_notes → outgoing payload');
+
+  return resultPayload;
 }
 
 logger.info('Tool handler: list defined and operational.');

@@ -82,27 +82,33 @@ describe('applyTextPatch', () => {
 
   it('should handle add operations correctly', () => {
     const patches: z.infer<typeof PatchOperationSchema>[] = [
-      { op: 'add', ln: 2, val: 'new line 1.5' },
-      { op: 'add', ln: 1, val: 'new line 0.5' },
-      { op: 'add', ln: 5, val: 'new line 4.5' },
+      { operation: 'add', line_number: 2, value: 'new line 1.5' },
+      { operation: 'add', line_number: 1, value: 'new line 0.5' },
+      { operation: 'add', line_number: 5, value: 'new line 4.5' },
+      { operation: 'addition', line_number: 2, value: 'new line 1.5' },
+      { operation: 'addition', line_number: 1, value: 'new line 0.5' },
+      { operation: 'addition', line_number: 5, value: 'new line 4.5' },
     ];
     const expectedText =
       'new line 0.5\nline one\nnew line 1.5\nline two\nline three\nline four\nnew line 4.5';
     expect(applyTextPatch(initialText, patches)).toBe(expectedText);
   });
 
-  it('should handle add operation at the end of the file (ln > lines.length)', () => {
+  it('should handle add operation at the end of the file (line_number > lines.length)', () => {
     const patches: z.infer<typeof PatchOperationSchema>[] = [
-      { op: 'add', ln: 10, val: 'new last line' },
+      { operation: 'add', line_number: 10, value: 'new last line' },
+      { operation: 'addition', line_number: 10, value: 'new last line' },
     ];
-    const expectedText = 'line one\nline two\nline three\nline four\nnew last line';
+    const expectedText = `${initialText}\nnew last line`;
     expect(applyTextPatch(initialText, patches)).toBe(expectedText);
   });
 
-  it('should handle delete operations correctly (high to low line numbers)', () => {
+  it('should handle delete operations correctly (sorted by line_number desc)', () => {
     const patches: z.infer<typeof PatchOperationSchema>[] = [
-      { op: 'del', ln: 3 },
-      { op: 'del', ln: 1 },
+      { operation: 'del', line_number: 1 }, // Delete first
+      { operation: 'del', line_number: 3 }, // Delete (original) third
+      { operation: 'deletion', line_number: 1 }, // Delete first
+      { operation: 'deletion', line_number: 3 }, // Delete (original) third
     ];
     const expectedText = 'line two\nline four';
     expect(applyTextPatch(initialText, patches)).toBe(expectedText);
@@ -110,46 +116,58 @@ describe('applyTextPatch', () => {
 
   it('should handle delete out of bounds silently', () => {
     const patches: z.infer<typeof PatchOperationSchema>[] = [
-      { op: 'del', ln: 10 },
-      { op: 'del', ln: 0 },
+      { operation: 'del', line_number: 10 },
+      { operation: 'del', line_number: 0 },
+      { operation: 'deletion', line_number: 10 },
+      { operation: 'deletion', line_number: 0 },
     ];
     expect(applyTextPatch(initialText, patches)).toBe(initialText);
   });
 
   it('should handle modify operations correctly', () => {
     const patches: z.infer<typeof PatchOperationSchema>[] = [
-      { op: 'mod', ln: 2, val: 'modified line two' },
-      { op: 'mod', ln: 4, val: 'MODIFIED LINE FOUR' },
+      { operation: 'mod', line_number: 2, value: 'modified line two' },
+      { operation: 'mod', line_number: 4, value: 'MODIFIED LINE FOUR' },
+      { operation: 'modification', line_number: 2, value: 'modified line two' },
+      { operation: 'modification', line_number: 4, value: 'MODIFIED LINE FOUR' },
     ];
-    const expectedText = 'line one\nmodified line two\nline three\nMODIFIED LINE FOUR';
+    const expectedText =
+      'line one\nmodified line two\nline three\nMODIFIED LINE FOUR';
     expect(applyTextPatch(initialText, patches)).toBe(expectedText);
   });
 
-  it('should handle modify out of bounds silently', () => {
+  it('should handle modify operation on a non-existent line (no change)', () => {
     const patches: z.infer<typeof PatchOperationSchema>[] = [
-      { op: 'mod', ln: 10, val: 'this should not appear' },
+      { operation: 'mod', line_number: 10, value: 'should not appear' },
+      { operation: 'modification', line_number: 10, value: 'should not appear' },
     ];
     expect(applyTextPatch(initialText, patches)).toBe(initialText);
   });
 
   it('should handle a mix of operations in the correct order (del, mod, add)', () => {
     const patches: z.infer<typeof PatchOperationSchema>[] = [
-      { op: 'add', ln: 2, val: 'added before two' },
-      { op: 'del', ln: 3 },
-      { op: 'mod', ln: 1, val: 'MODIFIED line one' },
-      { op: 'del', ln: 4 },
-      { op: 'add', ln: 1, val: 'PREPENDED' },
+      { operation: 'add', line_number: 1, value: 'ADDED AT VERY BEGINNING' }, // Add first
+      { operation: 'del', line_number: 2 }, // Delete original 'line two'
+      { operation: 'mod', line_number: 3, value: 'MODIFIED original line three' }, // Modify original 'line three'
+      { operation: 'add', line_number: 6, value: 'ADDED AT VERY END' }, // Add last
+      { operation: 'addition', line_number: 1, value: 'ADDED AT VERY BEGINNING' }, // Add first
+      { operation: 'deletion', line_number: 2 }, // Delete original 'line two'
+      { operation: 'modification', line_number: 3, value: 'MODIFIED original line three' }, // Modify original 'line three'
+      { operation: 'addition', line_number: 6, value: 'ADDED AT VERY END' }, // Add last
     ];
-    const expectedText = 'PREPENDED\nMODIFIED line one\nadded before two\nline two';
-    expect(applyTextPatch(initialText, patches)).toBe(expectedText);
+    const expectedTextAfterDelMod = 'ADDED AT VERY BEGINNING\nMODIFIED original line three\nline one\nline three\nline four\nADDED AT VERY END';
+    expect(applyTextPatch(initialText, patches)).toBe(expectedTextAfterDelMod);
   });
 
   it('should handle multiple operations on the same line number appropriately', () => {
     const text = 'a\nb\nc';
     const patches: z.infer<typeof PatchOperationSchema>[] = [
-      { op: 'del', ln: 2 },
-      { op: 'add', ln: 2, val: 'new b' },
-      { op: 'mod', ln: 2, val: 'cannot mod deleted' },
+      { operation: 'del', line_number: 2 },
+      { operation: 'add', line_number: 2, value: 'new b' },
+      { operation: 'mod', line_number: 2, value: 'cannot mod deleted' },
+      { operation: 'deletion', line_number: 2 },
+      { operation: 'addition', line_number: 2, value: 'new b' },
+      { operation: 'modification', line_number: 2, value: 'cannot mod deleted' },
     ];
     const expectedText = 'a\nnew b\ncannot mod deleted';
     expect(applyTextPatch(text, patches)).toBe(expectedText);
@@ -157,8 +175,10 @@ describe('applyTextPatch', () => {
 
   it('should handle empty string input', () => {
     const patches: z.infer<typeof PatchOperationSchema>[] = [
-      { op: 'add', ln: 1, val: 'first line' },
-      { op: 'add', ln: 2, val: 'second line' },
+      { operation: 'add', line_number: 1, value: 'first line' },
+      { operation: 'add', line_number: 2, value: 'second line' },
+      { operation: 'addition', line_number: 1, value: 'first line' },
+      { operation: 'addition', line_number: 2, value: 'second line' },
     ];
     expect(applyTextPatch('', patches)).toBe('first line\nsecond line');
   });
@@ -166,9 +186,12 @@ describe('applyTextPatch', () => {
   it('should handle patches on single line text', () => {
     const text = 'only one line';
     const patches: z.infer<typeof PatchOperationSchema>[] = [
-      { op: 'mod', ln: 1, val: 'the only modified line' },
-      { op: 'add', ln: 2, val: 'a new second line' },
-      { op: 'add', ln: 1, val: 'a new first line' },
+      { operation: 'mod', line_number: 1, value: 'the only modified line' },
+      { operation: 'add', line_number: 2, value: 'a new second line' },
+      { operation: 'add', line_number: 1, value: 'a new first line' },
+      { operation: 'modification', line_number: 1, value: 'the only modified line' },
+      { operation: 'addition', line_number: 2, value: 'a new second line' },
+      { operation: 'addition', line_number: 1, value: 'a new first line' },
     ];
     const expectedText = 'a new first line\nthe only modified line\na new second line';
     expect(applyTextPatch(text, patches)).toBe(expectedText);
@@ -289,7 +312,8 @@ describe('handleSave Tool', () => {
       id: sampleExistingNote.id,
       local_version: sampleExistingNote.local_version, 
       server_version: sampleExistingNote.server_version!,
-      text_patch: [{ op: 'mod', ln: 1, val: 'Patched original content' }],
+      text_patch: [{ operation: 'mod', line_number: 1, value: 'Patched original content' }],
+      text_patch: [{ operation: 'modification', line_number: 1, value: 'Patched original content' }],
     });
 
     const mockServerResponse: SimperiumSaveResponse = {
