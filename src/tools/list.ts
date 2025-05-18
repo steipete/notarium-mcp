@@ -1,4 +1,4 @@
-import type { Database as DB } from 'better-sqlite3';
+import type { DB } from '../cache/sqlite.js';
 import { ListInput, ListOutput, ListItemSchema } from '../schemas.js';
 import logger from '../logging.js';
 import { NotariumDbError } from '../errors.js';
@@ -100,8 +100,14 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
   const countSql = `SELECT COUNT(*) as total FROM notes WHERE ${whereClause};`;
   let totalItems = 0;
   try {
-    const countResult = db.prepare(countSql).get(...sqlParams) as { total: number };
-    totalItems = countResult.total;
+    // sql.js compatible count query
+    const stmtCount = db.prepare(countSql);
+    stmtCount.bind(sqlParams);
+    if (stmtCount.step()) {
+      const countRow = stmtCount.getAsObject() as { total: number };
+      totalItems = countRow.total;
+    }
+    stmtCount.free();
   } catch (err) {
     logger.error(
       { err, sql: countSql, params: sqlParams },
@@ -122,7 +128,14 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
 
   let rows: any[];
   try {
-    rows = db.prepare(dataSql).all(...finalSqlParams);
+    // sql.js compatible data query
+    const stmtData = db.prepare(dataSql);
+    stmtData.bind(finalSqlParams);
+    rows = [];
+    while (stmtData.step()) {
+      rows.push(stmtData.getAsObject());
+    }
+    stmtData.free();
   } catch (err) {
     logger.error(
       { err, sql: dataSql, params: finalSqlParams },
@@ -154,8 +167,8 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
       l_ver: row.l_ver,
       title_prev: titlePrev,
       tags: parsedTags,
-      mod_at: row.mod_at,
-      trash: !!row.trash, // Ensure boolean
+      mod_at: Math.floor(row.mod_at),
+      trash: !!row.trash,
     });
   });
 

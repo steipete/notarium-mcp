@@ -1,4 +1,4 @@
-import type { Database as DB } from 'better-sqlite3';
+import type { DB } from '../cache/sqlite.js';
 import { config } from '../config.js';
 import logger from '../logging.js';
 // Types are used for inference and instanceof checks, linter might warn if not directly instantiated.
@@ -16,10 +16,20 @@ import {
 // NotariumBackendError is used for typing re-thrown errors from API calls or in instanceof checks.
 import { NotariumBackendError, NotariumResourceNotFoundError } from '../errors.js';
 import { getDB } from '../cache/sqlite.js';
+import type { Statement } from 'sql.js';
 
 const FULL_SYNC_PAGE_SIZE = 100; // As per spec 8. Initial Full Sync PAGE_SIZE
 const DELTA_SYNC_PAGE_SIZE = 500; // As per spec 8. Delta Sync PAGE_SIZE
 const SIMPERIUM_NOTE_BUCKET = 'note'; // Simplenote uses 'note' bucket
+
+// Helper to fetch first row as object using sql.js Statement API
+function queryFirstRowObject<T = Record<string, unknown>>(db: DB, sql: string, params: any[] = []): T | undefined {
+  const stmt: Statement = db.prepare(sql);
+  if (params.length) stmt.bind(params);
+  const row = stmt.step() ? (stmt.getAsObject() as T) : undefined;
+  stmt.free();
+  return row;
+}
 
 export class BackendSyncService {
   private db: DB;
@@ -108,10 +118,11 @@ export class BackendSyncService {
       }
       
       // Now safe to query sync_metadata
-      const cursorRow = this.db
-        .prepare("SELECT value FROM sync_metadata WHERE key = 'backend_cursor'")
-        .get() as { value: string } | undefined;
-      let backendCursor: string | null = cursorRow?.value || null;
+      const cursorRow = queryFirstRowObject<{ value: string }>(
+        this.db,
+        "SELECT value FROM sync_metadata WHERE key = 'backend_cursor'",
+      );
+      let backendCursor: string | null = cursorRow?.value ?? null;
 
       if ((global as any).fullResyncRequiredByReset) {
         logger.info('Full resync triggered by cache reset.');
@@ -205,7 +216,7 @@ export class BackendSyncService {
     if (finalCursorToStore) {
       this.db
         .prepare("INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('backend_cursor', ?)")
-        .run(finalCursorToStore);
+        .run([finalCursorToStore]);
       logger.info(`Full sync completed. Stored final backend cursor: ${finalCursorToStore}`);
     } else {
       // This case (no final cursor after processing items) would be unusual if indexResponse.index had items.
@@ -234,7 +245,7 @@ export class BackendSyncService {
       if (indexResponse.current) {
         this.db
           .prepare("INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('backend_cursor', ?)")
-          .run(indexResponse.current);
+          .run([indexResponse.current]);
         logger.info(`Delta sync: No new data, updated cursor to ${indexResponse.current}`);
       } else {
         logger.warn(
@@ -257,7 +268,7 @@ export class BackendSyncService {
     if (indexResponse.current) {
       this.db
         .prepare("INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('backend_cursor', ?)")
-        .run(indexResponse.current);
+        .run([indexResponse.current]);
       logger.info(`Delta sync completed. Stored new backend cursor: ${indexResponse.current}`);
     } else {
       logger.warn(
@@ -281,13 +292,16 @@ export class BackendSyncService {
         logger.warn(
           `Note ${noteId} version ${serverVersion} not found on server (404 via getNoteContent). Marking as potentially hard deleted.`,
         );
-        const localNote = this.db.prepare('SELECT l_ver FROM notes WHERE id = ?').get(noteId) as
-          | { l_ver: number }
-          | undefined;
+        const localNoteObj = queryFirstRowObject<{ l_ver: number }>(
+          this.db,
+          'SELECT l_ver FROM notes WHERE id = ?',
+          [noteId],
+        );
+        const localNote = localNoteObj ?? undefined;
         if (localNote) {
           this.db
             .prepare('UPDATE notes SET trash = 1, sync_deleted = 1, l_ver = l_ver + 1 WHERE id = ?')
-            .run(noteId);
+            .run([noteId]);
         }
       } else {
         logger.error(
@@ -307,9 +321,11 @@ export class BackendSyncService {
     simperiumNoteData: SimperiumNoteResponseData['data'],
   ): Promise<void> {
     logger.debug(`Processing data for note ID: ${noteId}, server version: ${serverVersion}`);
-    const localNoteRow = this.db
-      .prepare('SELECT l_ver, s_ver, trash FROM notes WHERE id = ?')
-      .get(noteId) as { l_ver: number; s_ver?: number | null; trash: number } | undefined;
+    const localNoteRow = queryFirstRowObject<{ l_ver: number; s_ver?: number | null; trash: number }>(
+      this.db,
+      'SELECT l_ver, s_ver, trash FROM notes WHERE id = ?',
+      [noteId],
+    );
     const localNote = localNoteRow
       ? { ...localNoteRow, s_ver: localNoteRow.s_ver === null ? undefined : localNoteRow.s_ver }
       : undefined;
@@ -329,7 +345,7 @@ export class BackendSyncService {
             .prepare(
               'UPDATE notes SET trash = 1, s_ver = ?, l_ver = l_ver + 1, sync_deleted = 1 WHERE id = ?',
             )
-            .run(serverVersion, noteId);
+            .run([serverVersion, noteId]);
           logger.info(`Marked local note ${noteId} as trashed due to server delete flag.`);
         } else {
           logger.info(
@@ -342,12 +358,22 @@ export class BackendSyncService {
         const mod_at = simperiumNoteData.modificationDate || Date.now() / 1000;
         const crt_at = simperiumNoteData.creationDate || mod_at;
 
+        // UNCONDITIONAL SIMPLIFIED LOGGING (Pino - keep for comparison if console.error works)
+        logger.info({
+          message: 'DEBUG: Values for notes upsert (Pino)',
+          noteId_Debug: noteId,
+          noteContent_Debug: noteContent,
+          originalContent_Debug: simperiumNoteData.content, // Keep original content for comparison
+          typeOfOriginalContent_Debug: typeof simperiumNoteData.content,
+          typeOfCoalescedNoteContent_Debug: typeof noteContent,
+        }, 'Debug before upsert (Pino)');
+
         this.db
           .prepare(
             `INSERT OR REPLACE INTO notes (id, l_ver, s_ver, txt, tags, mod_at, crt_at, trash, sync_deleted)
            VALUES (?, COALESCE((SELECT l_ver FROM notes WHERE id = ?), 0) + 1, ?, ?, ?, ?, ?, ?, 0)`,
           )
-          .run(
+          .run([
             noteId,
             noteId,
             serverVersion,
@@ -356,7 +382,7 @@ export class BackendSyncService {
             mod_at,
             crt_at,
             simperiumNoteData.deleted ? 1 : 0,
-          );
+          ]);
         logger.info(`Upserted note ${noteId} (server version ${serverVersion}) into local cache.`);
       }
     } else if (localNote.s_ver && localNote.s_ver > serverVersion) {
@@ -384,27 +410,27 @@ export class BackendSyncService {
         .prepare(
           "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('last_sync_attempt_at', ?)",
         )
-        .run(this.lastSyncAttemptAt);
+        .run([this.lastSyncAttemptAt ?? null]);
       if (this.lastSuccessfulSyncAt) {
         this.db
           .prepare(
             "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('last_successful_sync_at', ?)",
           )
-          .run(this.lastSuccessfulSyncAt);
+          .run([this.lastSuccessfulSyncAt]);
       }
       if (this.lastSyncDurationMs !== null) {
         this.db
           .prepare(
             "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('last_sync_duration_ms', ?)",
           )
-          .run(this.lastSyncDurationMs);
+          .run([this.lastSyncDurationMs]);
       }
       this.db
         .prepare("INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('last_sync_status', ?)")
-        .run(this.lastSyncStatus);
+        .run([this.lastSyncStatus]);
       this.db
         .prepare("INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('sync_error_count', ?)")
-        .run(this.consecutiveErrorCount);
+        .run([this.consecutiveErrorCount]);
     } catch (dbErr) {
       logger.error({ err: dbErr }, 'Failed to update sync metadata in DB.');
       // Non-fatal for the sync service itself, but metrics will be stale.

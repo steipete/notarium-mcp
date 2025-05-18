@@ -1,4 +1,4 @@
-import type { Database as DB } from 'better-sqlite3';
+import type { DB } from '../cache/sqlite.js';
 // import type { AxiosInstance, AxiosError } from 'axios'; // Removed as unused directly
 import {
   ManageInput,

@@ -1,4 +1,4 @@
-import type { Database as DB } from 'better-sqlite3';
+import type { DB } from '../cache/sqlite.js';
 import readline from 'readline';
 import logger from '../logging.js';
 import { BackendSyncService } from '../sync/sync-service.js';
@@ -35,7 +35,12 @@ export async function startMcpServer(db: DB, syncService: BackendSyncService): P
       // Assuming handleMcpRequest is now imported and used
       const response = await handleMcpRequest(request, db, syncService);
       process.stdout.write(JSON.stringify(response) + '\n');
-      logger.debug({ mcpResponse: response }, 'Sent MCP response to stdout');
+      logger.info({ 
+        method: request.method,
+        responseId: response.id,
+        hasResult: 'result' in response,
+        hasError: 'error' in response
+      }, 'Sent MCP response to stdout');
     } catch (error) {
       logger.error({ err: error, rawLine: line }, 'Error processing MCP message from stdin');
       // Attempt to respond with a parse error if possible, otherwise log is the best we can do.

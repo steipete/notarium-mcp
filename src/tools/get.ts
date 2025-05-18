@@ -1,4 +1,4 @@
-import type { Database as DB } from 'better-sqlite3';
+import type { DB } from '../cache/sqlite.js';
 import { GetInput, GetOutput, NoteDataSchema } from '../schemas.js';
 import logger from '../logging.js';
 import {
@@ -46,8 +46,8 @@ export async function handleGet(params: GetInput, db: DB): Promise<GetOutput> {
     s_ver: noteRow.s_ver === null ? undefined : noteRow.s_ver, // Handle null s_ver from DB
     txt: noteRow.txt,
     tags: JSON.parse(noteRow.tags || '[]'),
-    mod_at: noteRow.mod_at,
-    crt_at: noteRow.crt_at === null ? undefined : noteRow.crt_at, // Handle null crt_at
+    mod_at: Math.floor(noteRow.mod_at), // Ensure integer timestamp
+    crt_at: noteRow.crt_at === null ? undefined : Math.floor(noteRow.crt_at), // Ensure integer timestamp if not null
     trash: !!noteRow.trash,
   };
 

@@ -1,4 +1,5 @@
-import type { Database as DB } from 'better-sqlite3';
+import type { DB } from '../cache/sqlite.js';
+import type { Statement } from 'sql.js';
 // import type { AxiosInstance, AxiosError, AxiosRequestConfig } from 'axios'; // AxiosInstance no longer needed directly
 // import type { AxiosError, AxiosRequestConfig } from 'axios'; // Removed as errors are now NotariumError subtypes
 // For this file, if only simperiumSaveNote is used, AxiosError/Config might also not be needed here.
@@ -82,6 +83,15 @@ export function applyTextPatch(
   return lines.join('\n');
 }
 
+// Helper to get single row as object using sql.js Statement API
+function queryFirstRow<T = Record<string, unknown>>(db: DB, sql: string, params: any[] = []): T | undefined {
+  const stmt: Statement = db.prepare(sql);
+  if (params.length) stmt.bind(params);
+  const row = stmt.step() ? (stmt.getAsObject() as T) : undefined;
+  stmt.free();
+  return row;
+}
+
 /**
  * Handles the 'save' tool invocation.
  * As per Spec 10.3.
@@ -107,7 +117,11 @@ export async function handleSave(params: SaveInput, db: DB): Promise<SaveOutput>
       );
     }
     try {
-      currentNote = db.prepare('SELECT * FROM notes WHERE id = ? AND l_ver = ?').get(id, l_ver);
+      currentNote = queryFirstRow(
+        db,
+        'SELECT * FROM notes WHERE id = ? AND l_ver = ?',
+        [id, l_ver],
+      );
     } catch (dbErr) {
       logger.error({ err: dbErr, id, l_ver }, 'DB error fetching note for update.');
       throw new NotariumDbError(
@@ -167,21 +181,21 @@ export async function handleSave(params: SaveInput, db: DB): Promise<SaveOutput>
     db.prepare(
       `INSERT OR REPLACE INTO notes (id, l_ver, s_ver, txt, tags, mod_at, crt_at, trash, sync_deleted)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
+    ).run([
       id,
       newLocalVersion,
       newServerVersion,
-      currentText, // Use the locally determined currentText (after patch/txt)
+      currentText, // after patch
       JSON.stringify(finalTags),
-      savedSimperiumNote.data.modificationDate || now, // Prefer server mod date if available
+      savedSimperiumNote.data.modificationDate || now,
       isNewNote
         ? savedSimperiumNote.data.creationDate || now
         : currentNote?.crt_at === null
           ? undefined
           : currentNote?.crt_at,
-      savedSimperiumNote.data.deleted ? 1 : 0, // Use server state for trash
+      savedSimperiumNote.data.deleted ? 1 : 0,
       0,
-    );
+    ]);
 
     const resultNoteData = {
       id: id!,
@@ -189,12 +203,12 @@ export async function handleSave(params: SaveInput, db: DB): Promise<SaveOutput>
       s_ver: newServerVersion,
       txt: currentText, // Reflect the content that was saved
       tags: savedSimperiumNote.data.tags || [],
-      mod_at: savedSimperiumNote.data.modificationDate || now,
+      mod_at: Math.floor(savedSimperiumNote.data.modificationDate || now), // Ensure integer
       crt_at: isNewNote
-        ? savedSimperiumNote.data.creationDate || now
+        ? Math.floor(savedSimperiumNote.data.creationDate || now) // Ensure integer
         : currentNote?.crt_at === null
           ? undefined
-          : currentNote?.crt_at,
+          : Math.floor(currentNote?.crt_at), // Ensure integer if exists
       trash: savedSimperiumNote.data.deleted || false,
     };
     return NoteDataSchema.parse(resultNoteData);

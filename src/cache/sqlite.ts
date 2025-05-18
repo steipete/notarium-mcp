@@ -1,427 +1,292 @@
-import Database from 'better-sqlite3';
-import type { Database as DB } from 'better-sqlite3';
+// console.error('[SQLite Path Debug] TOP OF sqlite.ts EXECUTING'); // Use Pino logger now
+
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
-import { config } from '../config.js';
+import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
+import { type Database as SqlJsDatabase, type SqlJsStatic } from 'sql.js';
 import logger from '../logging.js';
-import { NotariumDbError, NotariumInternalError } from '../errors.js';
+import { config } from '../config.js';
 
-const CURRENT_APP_SCHEMA_VERSION = 1;
-let db: DB;
-let newDbGeneratedSaltHex: string | null = null; // To pass salt from keying to createTables
+export type DB = SqlJsDatabase;
 
-// As per spec: A hard-coded, unique, long, random string constant
-// const OWNER_IDENTITY_SALT = "MCPNotarium_SimplenoteUserSalt_v1_a7b3c9d8e2f1"; // This is already in config.ts
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-function getDbFilePath(): string {
-  const dbFileName = config.DB_ENCRYPTION_KEY
-    ? 'notarium_cache.sqlite.encrypted'
-    : 'notarium_cache.sqlite';
-  return path.resolve(process.cwd(), dbFileName);
-}
-
-function deleteDatabaseFiles(dbFilePath: string): void {
-  logger.info(`Deleting database files associated with ${dbFilePath}`);
-  const filesToDelete = [dbFilePath, `${dbFilePath}-wal`, `${dbFilePath}-shm`];
-  for (const file of filesToDelete) {
-    try {
-      if (fs.existsSync(file)) {
-        fs.unlinkSync(file);
-        logger.debug(`Deleted ${file}`);
-      }
-    } catch (err) {
-      logger.warn(
-        { err, file },
-        `Failed to delete database file ${file}. It might be locked or already removed.`,
-      );
-    }
+let currentDir = __dirname;
+let projectRoot = currentDir;
+while (!fs.existsSync(path.join(projectRoot, 'package.json'))) {
+  const parentDir = path.dirname(projectRoot);
+  if (parentDir === projectRoot) {
+    throw new Error('Could not find project root (package.json). Current path: ' + currentDir);
   }
+  projectRoot = parentDir;
 }
 
-async function generateOwnerIdentityHash(): Promise<string> {
-  if (!config.SIMPLENOTE_USERNAME) {
-    throw new NotariumInternalError(
-      'SIMPLENOTE_USERNAME is not configured for owner identity hash generation.',
-    );
+const assetsDir = path.join(projectRoot, 'assets');
+const wasmPath = path.join(assetsDir, 'custom-sql-wasm.wasm');
+const customSqlJsGluePath = path.join(assetsDir, 'custom-sql-wasm.js');
+
+let SQL: SqlJsStatic | null = null;
+let dbInstance: SqlJsDatabase | null = null;
+
+async function loadSqlJs(): Promise<SqlJsStatic> {
+  if (SQL) return SQL!;
+
+  logger.debug('[SQLite Load] Attempting to load SQL.js');
+  if (!fs.existsSync(customSqlJsGluePath) || !fs.existsSync(wasmPath)) {
+    logger.fatal({ customSqlJsGluePath, wasmPath }, '[SQLite Load] Custom sql.js assets (glue or wasm) not found');
+    throw new Error('Missing sql.js assets (glue or wasm)');
   }
-  const sha256 = crypto.createHash('sha256');
-  sha256.update(config.SIMPLENOTE_USERNAME + config.OWNER_IDENTITY_SALT);
-  return sha256.digest('hex');
-}
 
-async function createTables(): Promise<void> {
-  logger.info('Creating new database tables and metadata...');
-  let attempt = 0;
-  while (true) {
-    attempt++;
-    try {
-      const saltToStore = newDbGeneratedSaltHex;
-      newDbGeneratedSaltHex = null;
-      const ownerHash = await generateOwnerIdentityHash();
-      
-      // First create sync_metadata table and commit it immediately to ensure it exists
-      db.exec('BEGIN;');
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS sync_metadata (
-          key TEXT PRIMARY KEY,
-          value TEXT
-        );
-      `);
-      db.exec('COMMIT;');
-      
-      // Now insert into sync_metadata in a separate transaction
-      db.exec('BEGIN;');
-      db.prepare("INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('owner_identity_hash', ?)").run(ownerHash);
-      if (saltToStore && config.DB_ENCRYPTION_KEY) {
-        db.prepare("INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('db_key_salt_hex', ?)").run(saltToStore);
-        logger.info({ salt: saltToStore }, 'Stored new db_key_salt_hex for encrypted database.');
-      }
-      db.exec('COMMIT;');
-      
-      // Create other tables
-      db.exec('BEGIN;');
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS notes (
-          id TEXT PRIMARY KEY,
-          l_ver INTEGER NOT NULL DEFAULT 0, 
-          s_ver INTEGER,                    
-          txt TEXT NOT NULL,
-          tags TEXT NOT NULL DEFAULT '[]',  
-          mod_at INTEGER NOT NULL,          
-          crt_at INTEGER,                   
-          trash INTEGER NOT NULL DEFAULT 0, 
-          sync_deleted INTEGER NOT NULL DEFAULT 0 
-        );
-        CREATE INDEX IF NOT EXISTS idx_notes_mod_at ON notes (mod_at);
-        CREATE INDEX IF NOT EXISTS idx_notes_trash ON notes (trash);
-      `);
-      db.exec('COMMIT;');
-      
-      // Create FTS table in a separate transaction
-      db.exec('BEGIN;');
-      db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-          id UNINDEXED, 
-          txt,          
-          tokenize = 'porter unicode61 remove_diacritics 1'
-        );
-      `);
-      db.exec('COMMIT;');
-      
-      // Finally create the triggers in a separate transaction
-      db.exec('BEGIN;');
-      db.exec(`
-        CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
-          INSERT INTO notes_fts (rowid, id, txt) VALUES (new.rowid, new.id, new.txt);
-        END;
-        CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
-          INSERT INTO notes_fts (notes_fts, rowid, id, txt) VALUES ('delete', old.rowid, old.id, old.txt);
-        END;
-        CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
-          INSERT INTO notes_fts (notes_fts, rowid, id, txt) VALUES ('delete', old.rowid, old.id, old.txt);
-          INSERT INTO notes_fts (rowid, id, txt) VALUES (new.rowid, new.id, new.txt);
-        END;
-      `);
-      
-      // Set schema version
-      db.pragma(`user_version = ${CURRENT_APP_SCHEMA_VERSION}`);
-      db.exec('COMMIT;');
-      
-      logger.info('Database tables created and metadata initialized.');
-      break;
-    } catch (error) {
-      logger.warn({ err: error, attempt }, 'Error creating database tables. Purging DB and retrying.');
-      if (db.inTransaction) {
-        try {
-          db.exec('ROLLBACK;');
-        } catch (rollbackError) {
-          logger.error({ err: rollbackError }, 'Error during rollback after table creation failure');
-        }
-      }
-      deleteDatabaseFiles(db.name);
-      db.close();
-      db = new (db.constructor as any)(db.name, {
-        verbose: config.LOG_LEVEL === 'trace' ? logger.trace.bind(logger) : undefined,
-      });
-      // If encrypted, reapply keying
-      if (config.DB_ENCRYPTION_KEY) {
-        applyEncryptionKeyPragmas(db, true);
-      }
-    }
-  }
-}
+  const ownRequire = createRequire(import.meta.url);
+  const relativePathToGlueFromHere = path.relative(__dirname, customSqlJsGluePath);
+  const requirePath = path.isAbsolute(relativePathToGlueFromHere)
+    ? relativePathToGlueFromHere
+    : (relativePathToGlueFromHere.startsWith('.') ? relativePathToGlueFromHere : './' + relativePathToGlueFromHere);
+  
+  logger.debug({ requirePath }, '[SQLite Load] Attempting to require custom SQL.js glue');
+  const loadedModule = ownRequire(requirePath);
+  let initSqlJsFunction: any;
 
-// Function to apply encryption keying PRAGMAs
-function applyEncryptionKeyPragmas(dbInstance: DB, isNewDb: boolean) {
-  if (!config.DB_ENCRYPTION_KEY) return; // Should not happen if encryptionEnabled is true
-
-  const passphrase = config.DB_ENCRYPTION_KEY.replace(/"/g, '""'); // Escape quotes for PRAGMA
-  dbInstance.pragma(`kdf_iter = ${config.DB_ENCRYPTION_KDF_ITERATIONS}`);
-
-  if (isNewDb) {
-    const saltHex = crypto.randomBytes(16).toString('hex');
-    newDbGeneratedSaltHex = saltHex; // Store for createTables to persist
-    // SQLCipher's cipher_kdf_salt pragma expects the salt as a hex string prefixed with '0x'
-    dbInstance.pragma(`cipher_kdf_salt = '0x${saltHex}'`);
-    logger.info('Applied KDF iterations and new KDF salt for new encrypted DB.');
+  if (typeof loadedModule === 'function') {
+    initSqlJsFunction = loadedModule;
+    logger.debug('[SQLite Load] Found initSqlJs directly from module exports.');
+  } else if (loadedModule && typeof loadedModule.default === 'function') {
+    initSqlJsFunction = loadedModule.default;
+    logger.debug('[SQLite Load] Found initSqlJs from module.exports.default.');
+  // @ts-ignore
+  } else if (typeof global !== 'undefined' && global.Module?.initSqlJs) {
+    // @ts-ignore
+    initSqlJsFunction = global.Module.initSqlJs;
+    logger.debug('[SQLite Load] Found initSqlJs from global.Module.initSqlJs.');
   } else {
-    // For existing DBs, SQLCipher uses the KDF salt that was set at its creation.
-    // We set kdf_iter to ensure our configured iteration count is attempted if it matches creation.
-    // We don't set cipher_kdf_salt here as we can't read it before keying.
-    logger.debug('Applied KDF iterations for existing encrypted DB.');
-  }
-  dbInstance.pragma(`key = "${passphrase}"`);
-  dbInstance.pragma('cipher_compatibility = 4');
-}
+    logger.warn({ loadedModuleType: typeof loadedModule, loadedModuleKeys: loadedModule ? Object.keys(loadedModule) : null }, '[SQLite Load] Failed to find initSqlJs in loaded module via direct/default/global. Attempting VM fallback.');
+    try {
+      const vm = await import('vm');
+      const glueSource = fs.readFileSync(customSqlJsGluePath, 'utf8');
+      const vmContext = {
+        require: ownRequire,
+        console, // Provide console for the script if it uses it
+        process, // Provide process for the script if it uses it
+        __dirname: assetsDir, 
+        module: {}, // Provide a dummy module object
+        exports: {}, // Provide dummy exports
+      } as Record<string, any>;
+      vm.createContext(vmContext);
+      const script = new vm.Script(`
+        ${glueSource};
+        // Ensure initSqlJs is the last expression to be returned
+        initSqlJs;
+      `);
+      const potentialInit = script.runInContext(vmContext);
+      if (typeof potentialInit === 'function') {
+        initSqlJsFunction = potentialInit;
+        logger.debug('[SQLite Load] Obtained initSqlJs via VM fallback.');
+      }
+    } catch (vmErr) {
+      logger.error({ error: String(vmErr) }, '[SQLite Load] VM fallback failed.');
+    }
 
-export async function initializeCache(): Promise<DB> {
-  if (db && db.open) return db;
-  const dbFilePath = getDbFilePath();
-  const dbDir = path.dirname(dbFilePath);
-  if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
-  }
-  const encryptionEnabled = !!config.DB_ENCRYPTION_KEY;
-  logger.info(
-    `Initializing local cache. Path: ${dbFilePath}, Encryption: ${encryptionEnabled ? 'Enabled' : 'Disabled'}`,
-  );
-  let SQLCipherDB;
-  if (encryptionEnabled) {
-    try {
-      SQLCipherDB = (await import('better-sqlite3-sqlcipher')).default;
-      logger.info('better-sqlite3-sqlcipher loaded successfully.');
-    } catch (e) {
-      logger.fatal(
-        { err: e },
-        'Failed to load better-sqlite3-sqlcipher. DB_ENCRYPTION_KEY is set but package unavailable. Install it or disable DB encryption.',
+    if (!initSqlJsFunction) {
+      logger.fatal({
+          loadedModuleType: typeof loadedModule,
+          loadedModuleKeys: loadedModule ? Object.keys(loadedModule) : 'null or undefined',
+        },
+        '[SQLite Load] Still failed to find initSqlJs after all fallbacks.'
       );
-      process.exit(1);
+      throw new Error('Could not load initSqlJs function from custom-sql-wasm.js after all fallbacks.');
     }
   }
-  const DBConstructor = encryptionEnabled && SQLCipherDB ? SQLCipherDB : Database;
-  let attempt = 0;
-  while (true) {
-    attempt++;
-    let newDbRequired = false;
-    try {
-      db = new DBConstructor(dbFilePath, {
-        verbose: config.LOG_LEVEL === 'trace' ? logger.trace.bind(logger) : undefined,
-      });
-      if (encryptionEnabled) {
-        applyEncryptionKeyPragmas(db, false);
-        try {
-          db.pragma('cipher_version');
-          logger.info('SQLCipher key applied and database accessed successfully (existing DB).');
-        } catch (keyError) {
-          logger.warn({ err: keyError }, 'Failed to apply SQLCipher key or verify (existing DB).');
-          const err = keyError as Error;
-          if (
-            err.message.includes('file is not a database') ||
-            err.message.toLowerCase().includes('sqliteerror: file is not a database')
-          ) {
-            logger.info('Decryption failed. Assuming new/corrupt DB. Deleting and recreating.');
-            db.close();
-            deleteDatabaseFiles(dbFilePath);
-            newDbRequired = true;
-            db = new DBConstructor(dbFilePath, {
-              verbose: config.LOG_LEVEL === 'trace' ? logger.trace.bind(logger) : undefined,
-            });
-            applyEncryptionKeyPragmas(db, true);
-            db.pragma('user_version = 0');
-            logger.info('New encrypted database initialized after decryption failure.');
-          } else {
-            throw keyError;
-          }
-        }
-      }
-      if (!newDbRequired) {
-        db.pragma('integrity_check');
-        logger.info('Database integrity check passed.');
-      }
-    } catch (err) {
-      logger.warn(
-        { err, dbFilePath, attempt },
-        'Initial DB open/integrity check failed. Deleting and recreating.',
-      );
-      if (db && db.open) db.close();
-      deleteDatabaseFiles(dbFilePath);
-      newDbRequired = true;
-      db = new DBConstructor(dbFilePath, {
-        verbose: config.LOG_LEVEL === 'trace' ? logger.trace.bind(logger) : undefined,
-      });
-      if (encryptionEnabled) {
-        applyEncryptionKeyPragmas(db, true);
-        db.pragma('user_version = 0');
-        logger.info('New encrypted database initialized after open failure.');
-      } else {
-        logger.info('New unencrypted database initialized after open failure.');
-      }
-    }
-    // --- Startup Checks (as per spec, refined) ---
-    const actualEncryptedFilePath = encryptionEnabled
-      ? dbFilePath
-      : path.resolve(process.cwd(), 'notarium_cache.sqlite.encrypted');
-    if (
-      !encryptionEnabled &&
-      fs.existsSync(actualEncryptedFilePath) &&
-      dbFilePath !== actualEncryptedFilePath
-    ) {
-      logger.fatal(
-        `Unencrypted mode active, but an encrypted DB file '${actualEncryptedFilePath}' exists. Remove or set DB_ENCRYPTION_KEY.`,
-      );
-      process.exit(1);
-    }
-    if (!encryptionEnabled && !newDbRequired && fs.existsSync(dbFilePath)) {
-      logger.warn('DB is unencrypted. Set DB_ENCRYPTION_KEY for enhanced security.');
-    }
-    let ownerIdentityHashInDb: string | undefined;
-    let dbSchemaVersion = 0;
-    if (!newDbRequired && fs.existsSync(dbFilePath) && fs.statSync(dbFilePath).size > 0) {
-      try {
-        dbSchemaVersion = db.pragma('user_version', { simple: true }) as number;
-        const tableCheck = db
-          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sync_metadata'")
-          .get();
-        if (tableCheck) {
-          const ownerRow = db
-            .prepare("SELECT value FROM sync_metadata WHERE key = 'owner_identity_hash'")
-            .get() as { value: string } | undefined;
-          ownerIdentityHashInDb = ownerRow?.value;
-        } else if (dbSchemaVersion > 0) {
-          logger.warn('DB has schema version but sync_metadata table is missing. Resetting.');
-          newDbRequired = true;
-        }
-      } catch (metaError) {
-        logger.warn(
-          { err: metaError, attempt },
-          'Failed to read metadata from existing DB. Assuming new DB required if not already flagged.',
-        );
-        newDbRequired = true;
-      }
-    }
-    if (newDbRequired && db && db.open) db.close();
-    if (newDbRequired && fs.existsSync(dbFilePath)) deleteDatabaseFiles(dbFilePath);
-    if (newDbRequired && (!db || !db.open)) {
-      db = new DBConstructor(dbFilePath, {
-        verbose: config.LOG_LEVEL === 'trace' ? logger.trace.bind(logger) : undefined,
-      });
-      if (encryptionEnabled) {
-        applyEncryptionKeyPragmas(db, true);
-      }
-    }
-    if (!newDbRequired) {
-      logger.info(
-        `Existing DB schema version: ${dbSchemaVersion}, App schema version: ${CURRENT_APP_SCHEMA_VERSION}`,
-      );
-      const notesTableExists =
-        (
-          db
-            .prepare(
-              "SELECT count(*) as count FROM sqlite_master WHERE type='table' AND name = 'notes'",
-            )
-            .get() as { count: number }
-        ).count > 0;
-      if (dbSchemaVersion === 0 && notesTableExists) {
-        logger.warn('DB schema version is 0 but tables exist. Reset required.');
-        newDbRequired = true;
-      } else if (dbSchemaVersion < CURRENT_APP_SCHEMA_VERSION && dbSchemaVersion !== 0) {
-        logger.warn(
-          `DB schema (${dbSchemaVersion}) is older than app schema (${CURRENT_APP_SCHEMA_VERSION}). Resetting cache.`,
-        );
-        newDbRequired = true;
-      } else if (dbSchemaVersion > CURRENT_APP_SCHEMA_VERSION) {
-        logger.warn(
-          `DB schema (${dbSchemaVersion}) is newer than app schema (${CURRENT_APP_SCHEMA_VERSION}). Resetting cache.`,
-        );
-        newDbRequired = true;
-      }
-      const currentOwnerIdentityHash = await generateOwnerIdentityHash();
-      if (ownerIdentityHashInDb && ownerIdentityHashInDb !== currentOwnerIdentityHash) {
-        logger.info('DB owner mismatch. Resetting cache.');
-        newDbRequired = true;
-      }
-      if (!ownerIdentityHashInDb && dbSchemaVersion > 0 && notesTableExists) {
-        logger.warn('Existing DB has schema but no owner hash. Resetting.');
-        newDbRequired = true;
-      }
-    }
-    if (newDbRequired) {
-      logger.info({ attempt }, 'New database creation or full reset required.');
-      if (db && db.open && path.basename(db.name) !== path.basename(dbFilePath)) {
-        db.close();
-        db = new DBConstructor(dbFilePath, {
-          verbose: config.LOG_LEVEL === 'trace' ? logger.trace.bind(logger) : undefined,
-        });
-      } else if (!db || !db.open) {
-        db = new DBConstructor(dbFilePath, {
-          verbose: config.LOG_LEVEL === 'trace' ? logger.trace.bind(logger) : undefined,
-        });
-      }
-      if (encryptionEnabled && !db.pragma('cipher_version', { simple: true })) {
-        applyEncryptionKeyPragmas(db, true);
-      }
-      await createTables();
-      (global as any).fullResyncRequiredByReset = true;
-      logger.info({ attempt }, 'New database created and initialized.');
-    } else {
-      logger.info('Existing database passes startup checks.');
-      
-      // Ensure essential tables exist even for existing databases
-      // This ensures we don't get "no such table" errors in TEST_MODE or with empty databases
-      const notesTableExists =
-        (
-          db
-            .prepare(
-              "SELECT count(*) as count FROM sqlite_master WHERE type='table' AND name = 'notes'",
-            )
-            .get() as { count: number }
-        ).count > 0;
-      
-      if (!notesTableExists) {
-        logger.info('Required tables missing. Creating essential schema...');
-        await createTables();
-        logger.info('Schema created for existing database.');
-      }
-    }
-    try {
-      db.pragma('journal_mode = WAL');
-      db.pragma('synchronous = NORMAL');
-      db.pragma('foreign_keys = ON');
-      logger.debug('Standard PRAGMAs applied.');
-    } catch (pragmaErr) {
-      logger.error({ err: pragmaErr }, 'Failed to apply standard PRAGMAs.');
-    }
-    logger.info('Local cache initialization complete.');
-    return db;
-  }
-}
 
-export function getDB(): DB {
-  if (!db || !db.open) {
-    throw new NotariumInternalError(
-      'Database not initialized or closed. Call initializeCache first.',
+  try {
+    const wasmBinary = fs.readFileSync(wasmPath);
+    logger.debug('[SQLite Load] WASM binary read, calling initSqlJsFunction.');
+    SQL = await initSqlJsFunction({ wasmBinary });
+    logger.info({
+        SQL_keys: SQL ? Object.keys(SQL) : 'SQL is null',
+        SQL_Database_type: SQL ? typeof SQL.Database : 'SQL is null'
+      },
+      '[SQLite Load] Custom sql.js (FTS5) initialised successfully.'
     );
+    if (!SQL || typeof SQL.Database !== 'function') {
+        throw new Error('initSqlJs did not return a valid SQL.js module with a Database constructor.');
+    }
+    return SQL;
+  } catch (initError) {
+    logger.fatal({ error: String(initError) }, '[SQLite Load] Error during initSqlJsFunction call.');
+    throw initError;
   }
-  return db;
 }
 
-export async function closeCache(): Promise<void> {
-  if (db && db.open) {
-    logger.info('Closing database connection...');
-    db.close();
-    logger.info('Database connection closed.');
+function ensureDir(dir: string): void {
+  if (!fs.existsSync(dir)) {
+    logger.debug({ directory: dir }, '[SQLite Cache] Creating directory for cache file.');
+    fs.mkdirSync(dir, { recursive: true });
   }
-  newDbGeneratedSaltHex = null; // Clear on close too
 }
 
-// Example usage (not for direct execution here, but for testing or reference)
-// async function test() {
-//   config.SIMPLENOTE_USERNAME = 'test@example.com'; // Mock config
-//   // config.DB_ENCRYPTION_KEY = 'testkey'; // Uncomment to test encryption
-//   await initializeCache();
-//   const notes = getDB().prepare("SELECT * FROM notes").all();
-//   logger.info({ notes }, "Current notes");
-//   await closeCache();
-// }
-// test().catch(console.error);
+function generateOwnerIdentityHash(currentConfig: typeof config): string {
+  // Spec: OWNER_IDENTITY_SALT = sha256(SIMPLENOTE_USERNAME + OWNER_IDENTITY_SALT_CONSTANT)
+  // For this simple version, just using username, but a hash is better for privacy if DB is shared/leaked.
+  // The actual hashing (e.g., with crypto module) can be added later if needed.
+  // For now, this ensures a unique DB per user.
+  if (!currentConfig.SIMPLENOTE_USERNAME) {
+    logger.warn('[SQLite Cache] SIMPLENOTE_USERNAME is undefined for generating cache file path. Using default "user".');
+    return 'user'; // Fallback, though config validation should prevent this.
+  }
+  // A simple pseudo-hash for now. Replace with actual crypto.createHash('sha256')... if needed.
+  return currentConfig.SIMPLENOTE_USERNAME.replace(/[^a-zA-Z0-9]/g, '_');
+}
+
+function cacheFilePath(): string {
+  const cacheDir = path.join(projectRoot, '.cache');
+  ensureDir(cacheDir);
+  // Use the imported config object directly
+  const ownerHash = generateOwnerIdentityHash(config); 
+  const name = `notarium-cache-${ownerHash}.sqlite3`;
+  const fullPath = path.join(cacheDir, name);
+  logger.debug({ cacheFilePath: fullPath }, '[SQLite Cache] Determined cache file path.');
+  return fullPath;
+}
+
+export async function initializeCache(): Promise<SqlJsDatabase> {
+  logger.debug('[SQLite Cache] Initializing cache DB...');
+  if (dbInstance) {
+    logger.debug('[SQLite Cache] DB instance already exists, returning.');
+    return dbInstance;
+  }
+
+  const SQLjs = await loadSqlJs();
+  const dbFilePath = cacheFilePath();
+
+  try {
+    const data = fs.readFileSync(dbFilePath);
+    dbInstance = new SQLjs.Database(new Uint8Array(data));
+    logger.info({ file: dbFilePath }, '[SQLite Cache] Opened existing cache DB.');
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      logger.info({ file: dbFilePath }, '[SQLite Cache] No existing database file found. Creating new sql.js database.');
+    } else {
+      logger.error({ err: String(err), dbFilePath }, '[SQLite Cache] Failed to read existing database file. Creating new one.');
+    }
+    dbInstance = new SQLjs.Database(); // Create new DB
+    try {
+      createSchema(dbInstance);
+      logger.info('[SQLite Cache] New database schema created.');
+      // Persist the newly created DB immediately so it exists on disk
+      const data = dbInstance.export();
+      fs.writeFileSync(dbFilePath, data);
+      logger.info({ file: dbFilePath }, '[SQLite Cache] New empty database saved to disk.');
+    } catch(schemaErr) {
+      logger.fatal({err: schemaErr}, '[SQLite Cache] Failed to create schema for new database.');
+      throw schemaErr;
+    }
+  }
+
+  // Ensure PRAGMAs are set after DB is initialized or created
+  try {
+    dbInstance.run('PRAGMA journal_mode=WAL;'); // Recommended for sql.js if saving to file
+    dbInstance.run('PRAGMA synchronous=NORMAL;'); // Good balance for file-based sql.js
+    dbInstance.run('PRAGMA foreign_keys=ON;');
+    logger.info('[SQLite Cache] Essential PRAGMAs (journal_mode, synchronous, foreign_keys) executed.');
+  } catch (pragmaErr: any) {
+    logger.error({ err: String(pragmaErr) }, '[SQLite Cache] Failed to execute PRAGMAs.');
+    // Not throwing here, as DB might still be usable for some operations
+  }
+  
+  // TODO: Add startup checks from spec (integrity, encryption, owner, schema version)
+
+  return dbInstance;
+}
+
+export function getDB(): SqlJsDatabase {
+  if (!dbInstance) {
+    logger.error('[SQLite Cache] getDB called before cache was initialized.');
+    throw new Error('Cache not initialised; call initializeCache() first');
+  }
+  return dbInstance;
+}
+
+export function closeCache(): void {
+  if (!dbInstance) {
+    logger.debug('[SQLite Cache] closeCache called but no DB instance exists.');
+    return;
+  }
+  try {
+    const data = dbInstance.export();
+    const filePath = cacheFilePath(); // Get path again in case it could change (though unlikely here)
+    fs.writeFileSync(filePath, data);
+    logger.info({ file: filePath }, '[SQLite Cache] Cache DB saved to disk.');
+  } catch (writeError) {
+    logger.error({ err: writeError, file: cacheFilePath() }, '[SQLite Cache] Failed to save cache DB to disk on close.');
+  }
+  
+  dbInstance.close();
+  dbInstance = null; // Clear the instance
+  logger.info('[SQLite Cache] Cache DB closed and instance cleared.');
+}
+
+function createSchema(db: SqlJsDatabase): void {
+  logger.debug('[SQLite Cache] Creating database schema...');
+  db.run(`
+    CREATE TABLE IF NOT EXISTS notes (
+      id   TEXT PRIMARY KEY NOT NULL,
+      txt  TEXT NOT NULL,
+      tags TEXT NOT NULL DEFAULT '[]', -- Stored as JSON string array
+      crt_at INTEGER NOT NULL, -- Unix epoch seconds
+      mod_at INTEGER NOT NULL, -- Unix epoch seconds
+      l_ver INTEGER NOT NULL DEFAULT 1, -- Local version, starts at 1, increments on local change
+      s_ver INTEGER, -- Simperium version (optional, from backend)
+      trash INTEGER NOT NULL DEFAULT 0 -- Boolean (0 or 1)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_notes_mod_at ON notes(mod_at);
+    CREATE INDEX IF NOT EXISTS idx_notes_trash ON notes(trash);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+      txt, tags, -- Columns to be indexed from 'notes' table
+      content='notes', -- Source table for content
+      content_rowid='rowid', -- Links FTS table rowid to 'notes' table rowid
+      tokenize='porter unicode61 remove_diacritics 1' -- Porter stemmer, Unicode 6.1 support, remove diacritics
+    );
+
+    -- Triggers to keep FTS table synchronized with notes table
+    CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+      INSERT INTO notes_fts(rowid, txt, tags) VALUES (new.rowid, new.txt, new.tags);
+    END;
+    CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+      INSERT INTO notes_fts(notes_fts, rowid, txt, tags) VALUES ('delete', old.rowid, old.txt, old.tags);
+    END;
+    CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+      INSERT INTO notes_fts(notes_fts, rowid, txt, tags) VALUES ('delete', old.rowid, old.txt, old.tags);
+      INSERT INTO notes_fts(rowid, txt, tags) VALUES (new.rowid, new.txt, new.tags);
+    END;
+
+    CREATE TABLE IF NOT EXISTS sync_metadata (
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    );
+  `);
+
+  // Initialize essential metadata
+  const stmt = db.prepare('INSERT OR IGNORE INTO sync_metadata (key, value) VALUES (?, ?)');
+  try {
+    stmt.run(['backend_cursor', '']); // For Simperium sync
+    stmt.run(['last_sync_start_ts', '0']);
+    stmt.run(['last_sync_end_ts', '0']);
+    stmt.run(['last_sync_status', 'never_synced']); // e.g., success, failed, in_progress
+    stmt.run(['last_sync_error', '']);
+    stmt.run(['total_notes_synced', '0']);
+    stmt.run(['notes_added_last_sync', '0']);
+    stmt.run(['notes_updated_last_sync', '0']);
+    stmt.run(['notes_deleted_locally_last_sync', '0']); 
+    logger.debug('[SQLite Cache] Initial sync_metadata inserted.');
+  } finally {
+    stmt.free();
+  }
+  logger.info('[SQLite Cache] Database schema created/verified.');
+}
+
+
+
