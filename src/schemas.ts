@@ -22,6 +22,7 @@ export const ListItemSchema = z.object({
   tags: NoteTagsSchema,
   modified_at: UnixTimestampSchema,
   trash: z.boolean(),
+  number_of_lines: z.number().int().optional(),
 });
 export type ListItem = z.infer<typeof ListItemSchema>;
 
@@ -47,13 +48,7 @@ export type NoteData = z.infer<typeof NoteDataSchema>;
 export const ListInputSchema = z.object({
   query: z.string().optional(), // Full-text search query. Filters like `tag:`, `before:`, `after:` are extracted from this.
   tags: z.array(NoteTagSchema).optional(), // Filter by notes containing ALL of these tags. Applied in addition to tags from `query_string`.
-  trash_status: z
-    .union([
-      z.literal(0), // Not in trash
-      z.literal(1), // In trash
-      z.literal(2), // Either (include trash)
-    ])
-    .default(0), // Default to not in trash. `0` for active, `1` for trashed, `2` for any.
+  trash_status: z.enum(['active', 'trashed', 'any']).default('active'), // Default to active notes.
   date_before: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Invalid date format, use YYYY-MM-DD')
@@ -82,16 +77,25 @@ export type ListOutput = z.infer<typeof ListOutputSchema>;
 
 // --- Tool: get ---
 // Spec 10.2. Tool `get`
-export const GetInputSchema = z.object({
-  id: z.string().min(1),
-  local_version: z.number().int().optional(), // Optional: request specific local version
-  range_line_start: z.number().int().min(1).optional(), // 1-indexed start line
-  range_line_count: z.number().int().min(0).optional(), // Number of lines to retrieve from start line (0 means to end of note)
+export const GetNotesInputSchema = z.object({
+  id: z.union([z.string().min(1), z.array(z.string().min(1)).min(1, {message: 'If providing an array of IDs, it must not be empty.'})])
+    .transform((val) => (typeof val === 'string' ? [val] : val))
+    .refine((arr) => arr.length <= 20, { message: 'Cannot fetch more than 20 notes at once.'}), // Limit batch size
+  local_version: z.number().int().optional(), // Optional: request specific local version (applies if single ID is effectively given)
+  range_line_start: z.number().int().min(1).optional(), // 1-indexed start line (applies if single ID is effectively given)
+  range_line_count: z.number().int().min(0).optional(), // Number of lines to retrieve (applies if single ID is effectively given)
+  // preview_lines: z.number().int().min(1).max(100).default(100).optional(), // Consistent preview length control
 });
-export type GetInput = z.infer<typeof GetInputSchema>;
+export type GetNotesInput = z.infer<typeof GetNotesInputSchema>;
 
-export const GetOutputSchema = NoteDataSchema; // Output is the full note data
-export type GetOutput = z.infer<typeof GetOutputSchema>;
+// GetOutput is now like ListOutput
+export const GetNotesOutputSchema = z.object({
+  content: z.array(ListItemSchema), 
+  total_items: z.number().int(),
+  current_page: z.number().int().default(1),
+  total_pages: z.number().int().default(1),
+});
+export type GetNotesOutput = z.infer<typeof GetNotesOutputSchema>;
 
 // --- Tool: save ---
 // Spec 10.3. Tool `save`
@@ -112,7 +116,7 @@ export const PatchOperationSchema = PatchOperationObjectSchema.refine(
   { message: "'value' is required for 'addition' and 'modification' operations" },
 );
 
-const SaveInputObjectSchema = z.object({
+export const SingleSaveNoteObjectSchema = z.object({
   id: z.string().min(1).optional(), // Changed from .uuid(). If undefined, create new note
   local_version: z.number().int().optional(), // Required if id is present (updating existing note)
   server_version: z.number().int().optional(), // Expected server version (for conflict detection on server side)
@@ -122,29 +126,19 @@ const SaveInputObjectSchema = z.object({
   trash: z.boolean().optional(), // Set trash status
 });
 
-export const SaveInputSchema = SaveInputObjectSchema.refine(
-  (data: z.infer<typeof SaveInputObjectSchema>) => !!data.text || !!data.text_patch,
-  {
-    message: "Either 'text' or 'text_patch' must be provided",
-    path: ['text'],
-  },
-)
-  .refine((data: z.infer<typeof SaveInputObjectSchema>) => !(data.text && data.text_patch), {
-    message: "Cannot provide both 'text' and 'text_patch''",
-    path: ['text'],
-  })
-  .refine(
-    (data: z.infer<typeof SaveInputObjectSchema>) =>
-      data.id ? typeof data.local_version === 'number' : true,
-    {
-      message: "'local_version' is required when 'id' is provided (updating an existing note)",
-      path: ['local_version'],
-    },
-  );
-export type SaveInput = z.infer<typeof SaveInputSchema>;
+export const SaveNotesInputSchema = z.object({
+  notes: z.array(SingleSaveNoteObjectSchema).min(1, {message: 'At least one note object must be provided in the notes array.'}) // Array of notes to save
+    .max(20, {message: 'Cannot save more than 20 notes at once.'}), // Limit batch size
+});
+export type SaveNotesInput = z.infer<typeof SaveNotesInputSchema>;
 
-export const SaveOutputSchema = NoteDataSchema; // Returns the saved note data
-export type SaveOutput = z.infer<typeof SaveOutputSchema>;
+export const SaveNotesOutputSchema = z.object({
+  content: z.array(ListItemSchema),
+  total_items: z.number().int(), // Number of notes successfully saved
+  current_page: z.number().int().default(1),
+  total_pages: z.number().int().default(1),
+});
+export type SaveNotesOutput = z.infer<typeof SaveNotesOutputSchema>;
 
 // --- Tool: manage ---
 // Spec 10.4. Tool `manage`
@@ -153,7 +147,6 @@ export const ServerStatsSchema = z.object({
   mcp_notarium_version: z.string(),
   node_version: z.string(),
   memory_rss_mb: z.number(),
-  db_encryption: z.enum(['enabled', 'disabled', 'unavailable']),
   db_file_size_mb: z.number().optional(),
   db_total_notes: z.number().int(),
   db_last_sync_at: UnixTimestampSchema.nullable().optional(), // Nullable if never synced

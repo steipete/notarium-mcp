@@ -1,11 +1,88 @@
 import type { DB } from '../cache/sqlite.js';
-import { GetInput, GetOutput, NoteDataSchema } from '../schemas.js';
+import { GetInput, GetOutput, ListItemSchema } from '../schemas.js';
+import { z } from 'zod';
 import logger from '../logging.js';
 import {
   NotariumResourceNotFoundError,
   NotariumDbError,
-  NotariumInternalError,
 } from '../errors.js';
+
+// Helper to fetch a single note and format it as a ListItem
+// Includes forgiving FTS fallback
+async function fetchAndFormatSingleNote(idInput: string, db: DB, local_version_param?: number, range_line_start_param?: number, range_line_count_param?: number): Promise<z.infer<typeof ListItemSchema> | null> {
+  let noteRow: any;
+  try {
+    let stmt;
+    if (local_version_param !== undefined) {
+      stmt = db.prepare('SELECT * FROM notes WHERE id = ? AND local_version = ?');
+      stmt.bind([idInput, local_version_param]);
+    } else {
+      stmt = db.prepare('SELECT * FROM notes WHERE id = ? ORDER BY local_version DESC LIMIT 1');
+      stmt.bind([idInput]);
+    }
+
+    if (stmt.step()) {
+      noteRow = stmt.getAsObject();
+    }
+    stmt.free();
+
+    if (!noteRow) {
+      logger.info({ id: idInput }, '[get_note helper] Primary id lookup failed, attempting FTS fallback.');
+      stmt = db.prepare(
+        `SELECT * FROM notes WHERE rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts.text MATCH ?) ORDER BY modified_at DESC LIMIT 1`);
+      stmt.bind([idInput]); // Use the original id string for FTS match
+      if (stmt.step()) {
+        noteRow = stmt.getAsObject();
+      }
+      stmt.free();
+    }
+  } catch (err) {
+    logger.error({ err, id: idInput }, '[get_note helper] DB error fetching single note.');
+    return null; // Continue with other IDs if in a batch
+  }
+
+  if (!noteRow) {
+    logger.warn({ id: idInput }, '[get_note helper] Note not found after fallback.');
+    return null;
+  }
+
+  let noteTextForProcessing = noteRow.text === null || noteRow.text === undefined ? '' : String(noteRow.text);
+  const totalLines = noteTextForProcessing.split('\n').length;
+
+  // Apply ranging if specified (only really makes sense if a single ID was effectively requested by the user initially)
+  if (range_line_start_param !== undefined && range_line_count_param !== undefined) {
+    const lines = noteTextForProcessing.split('\n');
+    const startLineZeroIndexed = range_line_start_param - 1;
+    if (startLineZeroIndexed < 0 || startLineZeroIndexed >= totalLines || range_line_start_param <= 0) {
+      noteTextForProcessing = ''; // Range invalid, return empty text for this part
+    } else {
+      const lineCountToRetrieve = range_line_count_param === 0 ? totalLines - startLineZeroIndexed : range_line_count_param;
+      const endLineActualZeroIndexed = Math.min(startLineZeroIndexed + lineCountToRetrieve, totalLines);
+      noteTextForProcessing = lines.slice(startLineZeroIndexed, endLineActualZeroIndexed).join('\n');
+    }
+  }
+
+  const linesArr = noteTextForProcessing.split('\n');
+  const preview_lines_default = 100;
+  const previewLinesCount = Math.min(preview_lines_default, linesArr.length);
+  const previewText = linesArr.slice(0, previewLinesCount).join('\n').trim() || '(empty note)';
+
+  try {
+    return ListItemSchema.parse({
+      type: 'text',
+      uuid: noteRow.id,
+      text: previewText, // This is now potentially ranged AND/OR preview-limited
+      local_version: noteRow.local_version,
+      tags: JSON.parse(noteRow.tags || '[]'),
+      modified_at: Math.floor(noteRow.modified_at),
+      trash: !!noteRow.trash,
+      number_of_lines: totalLines, // Always report total lines of the original note
+    });
+  } catch (parseErr) {
+    logger.error({ err: parseErr, noteId: noteRow.id }, '[get_note helper] Failed to parse note data into ListItemSchema.');
+    return null;
+  }
+}
 
 /**
  * Handles the 'get' tool invocation.
@@ -13,133 +90,33 @@ import {
  */
 export async function handleGet(params: GetInput, db: DB): Promise<GetOutput> {
   logger.debug({ params }, 'Handling get tool request');
-  const { id, local_version, range_line_start, range_line_count } = params;
-  const preview_lines = 3;
+  // After schema validation and transform, params.id is always string[] (named ids_internal for clarity)
+  const { id: ids_internal, local_version, range_line_start, range_line_count } = params;
+  const fetchedItems: Array<z.infer<typeof ListItemSchema>> = [];
 
-  let noteRow: any; // Will be validated later by schema
-  try {
-    let stmt;
-    if (local_version !== undefined) {
-      stmt = db.prepare('SELECT * FROM notes WHERE id = ? AND local_version = ?');
-      stmt.bind([id, local_version]);
-    } else {
-      stmt = db.prepare('SELECT * FROM notes WHERE id = ? ORDER BY local_version DESC LIMIT 1');
-      stmt.bind([id]);
-    }
+  // Ranging and specific local_version only apply if a single ID was effectively passed.
+  // If multiple IDs are given, these params are ignored for simplicity, and latest version is fetched.
+  const applyRangeAndVersion = ids_internal.length === 1;
 
-    if (stmt.step()) {
-      noteRow = stmt.getAsObject();
-    }
-    stmt.free();
-  } catch (err) {
-    logger.error({ err, id, local_version }, 'Error fetching note from DB in get tool');
-    throw new NotariumDbError(
-      'Failed to retrieve note.',
-      'Database error while getting note.',
-      undefined,
-      err as Error,
+  for (const current_id of ids_internal) {
+    const item = await fetchAndFormatSingleNote(
+      current_id,
+      db,
+      applyRangeAndVersion ? local_version : undefined,
+      applyRangeAndVersion ? range_line_start : undefined,
+      applyRangeAndVersion ? range_line_count : undefined,
     );
-  }
-
-  if (!noteRow) {
-    logger.info({ id }, 'Primary id lookup failed, attempting forgiving FTS fallback search');
-    try {
-      const stmtFallback = db.prepare(
-        `SELECT * FROM notes WHERE rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts.text MATCH ?) ORDER BY modified_at DESC LIMIT 1`);
-      stmtFallback.bind([id]);
-      if (stmtFallback.step()) {
-        noteRow = stmtFallback.getAsObject();
-      }
-      stmtFallback.free();
-    } catch (ftsErr) {
-      logger.warn({ err: ftsErr, id }, 'FTS fallback lookup in get tool failed');
-    }
-
-    if (!noteRow) {
-      const message =
-        local_version !== undefined
-          ? `Note with id '${id}' and local version ${local_version} not found.`
-          : `Note with id '${id}' not found.`;
-      throw new NotariumResourceNotFoundError(message, 'The requested note could not be found.');
+    if (item) {
+      fetchedItems.push(item);
     }
   }
 
-  // Safely construct fullNoteData now that we know noteRow exists.
-  const noteTextForProcessing = noteRow.text === null || noteRow.text === undefined ? '' : String(noteRow.text);
-
-  const fullNoteData: any = {
-    id: noteRow.id, // Safe: noteRow is defined
-    local_version: noteRow.local_version, // Safe
-    server_version: noteRow.server_version === null ? undefined : noteRow.server_version,
-    text: noteTextForProcessing, // Use the processed text for the main 'text' field
-    tags: JSON.parse(noteRow.tags || '[]'),
-    modified_at: Math.floor(noteRow.modified_at), // Map from DB column mod_at
-    created_at: noteRow.created_at === null ? undefined : Math.floor(noteRow.created_at), // Map from DB crt_at
-    trash: !!noteRow.trash,
+  return {
+    content: fetchedItems,
+    total_items: fetchedItems.length,
+    current_page: 1, // Not paginated for this specific call
+    total_pages: 1,
   };
-
-  if (range_line_start !== undefined && range_line_count !== undefined) {
-    const lines = noteTextForProcessing.split('\n');
-    const totalLines = lines.length;
-    fullNoteData.text_total_lines = totalLines;
-    fullNoteData.text_is_partial = true;
-
-    const startLineZeroIndexed = range_line_start - 1;
-
-    if (startLineZeroIndexed < 0 || startLineZeroIndexed >= totalLines || range_line_start <= 0) {
-      fullNoteData.text = '';
-      fullNoteData.range_line_start = range_line_start; // Report back requested start
-      fullNoteData.range_line_count = 0; // Report zero lines returned
-    } else {
-      const lineCountToRetrieve = range_line_count === 0 ? totalLines - startLineZeroIndexed : range_line_count;
-      const endLineActualZeroIndexed = Math.min(
-        startLineZeroIndexed + lineCountToRetrieve,
-        totalLines,
-      );
-
-      fullNoteData.text = lines.slice(startLineZeroIndexed, endLineActualZeroIndexed).join('\n');
-      fullNoteData.range_line_start = range_line_start;
-      fullNoteData.range_line_count = endLineActualZeroIndexed - startLineZeroIndexed;
-    }
-  } else {
-    fullNoteData.text_is_partial = false;
-    fullNoteData.text_total_lines = noteTextForProcessing.split('\n').length;
-  }
-
-  try {
-    // Convert to list-style item for compatibility with some clients
-    const firstLinesArr = fullNoteData.text.split('\n');
-    const previewLinesCount = Math.min(preview_lines, firstLinesArr.length);
-    const previewText = firstLinesArr.slice(0, previewLinesCount).join('\n').trim() || '(empty note)';
-
-    const listStyleItem = {
-      type: 'text',
-      uuid: fullNoteData.id,
-      text: previewText,
-      local_version: fullNoteData.local_version,
-      tags: fullNoteData.tags,
-      modified_at: fullNoteData.modified_at,
-      trash: fullNoteData.trash,
-    };
-
-    return {
-      content: [listStyleItem],
-      total_items: 1,
-      current_page: 1,
-      total_pages: 1,
-    } as any;
-  } catch (err) {
-    logger.error(
-      { err, noteData: fullNoteData, issues: (err as any).issues },
-      'Failed to parse note data into schema for get tool output.',
-    );
-    throw new NotariumInternalError(
-      'Failed to prepare note data for output.',
-      'Internal server error.',
-      { zodIssues: (err as any).issues },
-      err as Error,
-    );
-  }
 }
 
 logger.info('Tool handler: get defined.');

@@ -10,19 +10,18 @@ import { NotariumDbError } from '../errors.js';
 export async function handleList(params: ListInput, db: DB): Promise<ListOutput> {
   logger.debug({ params }, 'Handling list tool request');
 
-  const { query, tags, limit = 20, page = 1, trash_status = 0, date_before, date_after, sort_by, sort_order, preview_lines = 3 } =
+  const { query, tags, limit = 20, page = 1, trash_status = 'active', date_before, date_after, sort_by, sort_order, preview_lines = 3 } =
     params;
 
   const sqlWhereClauses: string[] = [];
   const sqlParams: (string | number)[] = [];
 
   // 1. trash_status value (Spec 10.1.Server Logic.1)
-  // trash_status: 0 = not in trash, 1 = in trash, 2 = either
-  if (trash_status === 0) {
+  if (trash_status === 'active') {
     sqlWhereClauses.push('notes.trash = 0');
-  } else if (trash_status === 1) {
+  } else if (trash_status === 'trashed') {
     sqlWhereClauses.push('notes.trash = 1');
-  } // if trash_status is 2, no clause is added for trash status.
+  } // if trash_status is 'any', no clause is added.
 
   // 3. effective_tags (Spec 10.1.Server Logic.3)
   const effectiveTags = new Set<string>(tags || []);
@@ -241,6 +240,7 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
       tags: parsedTags,
       modified_at: Math.floor(row.modified_at),
       trash: !!row.trash,
+      number_of_lines: linesArr.length,
     });
   });
 

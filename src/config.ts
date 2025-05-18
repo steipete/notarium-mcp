@@ -37,8 +37,6 @@ const DEFAULT_LOG_FILE_PATH = "./notarium-debug.log"; // Default log file
 export interface AppConfig {
   SIMPLENOTE_USERNAME?: string;
   SIMPLENOTE_PASSWORD?: string;
-  DB_ENCRYPTION_KEY?: string;
-  DB_ENCRYPTION_KDF_ITERATIONS: number;
   SYNC_INTERVAL_SECONDS: number;
   API_TIMEOUT_SECONDS: number;
   LOG_LEVEL: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
@@ -97,13 +95,6 @@ function validateLogLevel(
 export const config: AppConfig = {
   SIMPLENOTE_USERNAME: process.env.SIMPLENOTE_USERNAME,
   SIMPLENOTE_PASSWORD: process.env.SIMPLENOTE_PASSWORD,
-  DB_ENCRYPTION_KEY: process.env.DB_ENCRYPTION_KEY,
-  DB_ENCRYPTION_KDF_ITERATIONS: parseIntEnv(
-    process.env.DB_ENCRYPTION_KDF_ITERATIONS,
-    310000,
-    'DB_ENCRYPTION_KDF_ITERATIONS',
-    10000,
-  ),
   SYNC_INTERVAL_SECONDS: parseIntEnv(
     process.env.SYNC_INTERVAL_SECONDS,
     300,
@@ -127,12 +118,6 @@ export function validateConfig(): void {
     logger.fatal('Missing SIMPLENOTE_PASSWORD in environment variables. This is a required configuration.');
     process.exit(1);
   }
-
-  if (config.DB_ENCRYPTION_KEY && config.DB_ENCRYPTION_KEY.length < 16) {
-    logger.warn(
-      'DB_ENCRYPTION_KEY is set but appears to be short. A strong, unique passphrase of at least 16 characters is recommended.',
-    );
-  }
   logger.info(`Logging to file: ${config.LOG_FILE_PATH} (Level: ${config.LOG_LEVEL})`);
 }
 
@@ -151,10 +136,6 @@ export async function printConfigVars(): Promise<void> {
     toPrint.SIMPLENOTE_USERNAME = `${toPrint.SIMPLENOTE_USERNAME} (from ENV)`;
   } else {
     toPrint.SIMPLENOTE_USERNAME = '<Not Set - Required>';
-  }
-
-  if (toPrint.DB_ENCRYPTION_KEY) {
-    toPrint.DB_ENCRYPTION_KEY = '********';
   }
 
   for (const [key, value] of Object.entries(toPrint)) {
@@ -181,8 +162,6 @@ export async function printConfigVars(): Promise<void> {
   console.log('Purpose of variables:');
   console.log('  SIMPLENOTE_USERNAME: Your Simplenote email address. (Required)');
   console.log('  SIMPLENOTE_PASSWORD: Your Simplenote password. (Required)');
-  console.log('  DB_ENCRYPTION_KEY: Passphrase to encrypt local cache. (Optional)');
-  console.log('  DB_ENCRYPTION_KDF_ITERATIONS: PBKDF2 iterations. (Default: 310000)');
   console.log('  SYNC_INTERVAL_SECONDS: Sync frequency. (Default: 300s, Min: 60s)');
   console.log('  API_TIMEOUT_SECONDS: API call timeout. (Default: 30s, Min: 5s)');
   console.log('  LOG_LEVEL: Logging verbosity. (Default: debug)');

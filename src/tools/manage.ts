@@ -55,6 +55,7 @@ function wrapResultForUi(result: any): any {
         tags: [],
         modified_at: Math.floor(Date.now() / 1000),
         trash: false,
+        number_of_lines: 1,
       },
     ],
     total_items: 1,
@@ -117,7 +118,6 @@ export async function handleManage(
           mcp_notarium_version: currentConfig.MCP_NOTARIUM_VERSION,
           node_version: currentConfig.NODE_VERSION,
           memory_rss_mb: Math.round(process.memoryUsage().rss / (1024 * 1024)),
-          db_encryption: currentConfig.DB_ENCRYPTION_KEY ? 'enabled' : 'disabled',
           db_file_size_mb: Math.round((dbFileSize / (1024 * 1024)) * 100) / 100, // MB with 2 decimal places
           db_total_notes: dbTotalNotes,
           db_last_sync_at: lastSuccessfulSyncAtRow

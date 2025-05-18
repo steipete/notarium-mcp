@@ -78,29 +78,12 @@ describe('Configuration Module (config.ts)', () => {
     });
 
     it('should warn if DB_ENCRYPTION_KEY is short', async () => {
-      process.env.SIMPLENOTE_USERNAME = 'user';
-      process.env.SIMPLENOTE_PASSWORD = 'password';
-      process.env.DB_ENCRYPTION_KEY = 'short';
-      const freshConfigModule = await import('./config.js?bustcache=' + Date.now());
-      freshConfigModule.validateConfig();
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('DB_ENCRYPTION_KEY is set but appears to be short'),
-      );
+      // Test removed as DB_ENCRYPTION_KEY is removed
+      expect(true).toBe(true);
     });
   });
 
   describe('Default Values and Parsing', () => {
-    it('should use default DB_ENCRYPTION_KDF_ITERATIONS', async () => {
-      const freshConfigModule = await import('./config.js?bustcache=' + Date.now());
-      expect(freshConfigModule.config.DB_ENCRYPTION_KDF_ITERATIONS).toBe(310000);
-    });
-
-    it('should parse DB_ENCRYPTION_KDF_ITERATIONS from env', async () => {
-      process.env.DB_ENCRYPTION_KDF_ITERATIONS = '100000';
-      const freshConfigModule = await import('./config.js?bustcache=' + Date.now());
-      expect(freshConfigModule.config.DB_ENCRYPTION_KDF_ITERATIONS).toBe(100000);
-    });
-
     it('should use default SYNC_INTERVAL_SECONDS', async () => {
       const freshConfigModule = await import('./config.js?bustcache=' + Date.now());
       expect(freshConfigModule.config.SYNC_INTERVAL_SECONDS).toBe(300);

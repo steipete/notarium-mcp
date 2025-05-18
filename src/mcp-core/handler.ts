@@ -2,13 +2,13 @@ import type { DB } from '../cache/sqlite.js';
 import logger from '../logging.js';
 import { BackendSyncService } from '../sync/sync-service.js';
 import { NotariumError, NotariumValidationError, NotariumInternalError } from '../errors.js';
-import { ListInputSchema, GetInputSchema, SaveInputSchema, ManageInputSchema } from '../schemas.js';
+import { ListInputSchema, GetNotesInputSchema, SaveNotesInputSchema, ManageInputSchema } from '../schemas.js';
 import { config } from '../config.js';
 
 // Placeholder for actual tool implementations
 import { handleList } from '../tools/list.js';
-import { handleGet } from '../tools/get.js';
-import { handleSave } from '../tools/save.js';
+import { handleGet as handleGetNotes } from '../tools/get.js';
+import { handleSave as handleSaveNotes } from '../tools/save.js';
 import { handleManage } from '../tools/manage.js';
 import * as toolImplementations from '../tools/index.js';
 
@@ -42,10 +42,10 @@ async function callToolMethod(methodName: string, params: any, db: DB, syncServi
   switch (methodName) {
     case 'list':
       return await handleList(params, db);
-    case 'get':
-      return await handleGet(params, db);
-    case 'save':
-      return await handleSave(params, db);
+    case 'get_notes':
+      return await handleGetNotes(params, db);
+    case 'save_notes':
+      return await handleSaveNotes(params, db);
     case 'manage':
       return await handleManage(params, db, syncService, config);
     default:
@@ -139,51 +139,65 @@ export async function handleMcpRequest(
           {
             name: 'list_notes',
             title: 'List notes',
-            description: 'Lists notes, allowing for filtering by text query, tags, modification date, and trash status. Supports pagination and sorting.',
+            description: 'Lists notes, allowing for filtering by text query, tags, modification date, and trash status. Supports pagination and sorting. Each returned note item includes a number_of_lines field indicating its total line count.',
             inputSchema: {
               type: 'object',
               properties: {
-                query: { type: 'string', description: 'Full-text search query. Can include filters like tag:yourtag, before:YYYY-MM-DD, after:YYYY-MM-DD.' },
-                tags: { type: 'array', items: { type: 'string' }, description: 'Filter by notes containing ALL of these tags.' },
-                trash_status: { type: 'integer', enum: [0, 1, 2], description: 'Filter by trash status (0: active, 1: trashed, 2: any).' },
-                date_before: { type: 'string', format: 'date', description: 'Filter notes modified before this UTC date (YYYY-MM-DD).' },
-                date_after: { type: 'string', format: 'date', description: 'Filter notes modified after this UTC date (YYYY-MM-DD).' },
-                sort_by: { type: 'string', enum: ['modified_at', 'created_at'], description: 'Field to sort by.' },
-                sort_order: { type: 'string', enum: ['ASC', 'DESC'], description: 'Sort order.' },
-                limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum number of notes to return.' },
-                page: { type: 'integer', minimum: 1, description: 'Page number for pagination.' },
-                preview_lines: { type: 'integer', minimum: 1, maximum: 20, description: 'Number of leading lines to include in preview text (default 3, max 20).' }
+                query: { type: 'string', description: 'Full-text search query. Can include filters like tag:yourtag, before:YYYY-MM-DD, after:YYYY-MM-DD. (Optional, Default: no query)' },
+                tags: { type: 'array', items: { type: 'string' }, description: 'Filter by notes containing ALL of these tags. (Optional, Default: no tag filter)' },
+                trash_status: { type: 'string', enum: ['active', 'trashed', 'any'], description: "Filter by trash status. Default: 'active'." },
+                date_before: { type: 'string', format: 'date', description: 'Filter notes modified before this UTC date (YYYY-MM-DD). (Optional, Default: no date filter)' },
+                date_after: { type: 'string', format: 'date', description: 'Filter notes modified after this UTC date (YYYY-MM-DD). (Optional, Default: no date filter)' },
+                sort_by: { type: 'string', enum: ['modified_at', 'created_at'], description: 'Field to sort by. Default: modified_at.' },
+                sort_order: { type: 'string', enum: ['ASC', 'DESC'], description: 'Sort order. Default: DESC.' },
+                limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum number of notes to return. Default: 20.' },
+                page: { type: 'integer', minimum: 1, description: 'Page number for pagination. Default: 1.' },
+                preview_lines: { type: 'integer', minimum: 1, maximum: 20, description: 'Number of leading lines to include in preview text. Default: 3, Max: 20.' }
               }
             },
           },
           {
-            name: 'get_note',
-            title: 'Get note',
+            name: 'get_notes',
+            title: 'Get Note(s)',
             description: 'Retrieves a specific note by its unique ID. Can also fetch a particular version of the note or a specific range of lines within the note.',
             inputSchema: {
               type: 'object',
               required: ['id'],
               properties: {
-                id: { type: 'string', description: 'Note ID to retrieve (must be a non-empty string).' },
-                local_version: { type: 'integer', description: 'Optional: specific local version of the note to retrieve.' },
-                range_line_start: { type: 'integer', minimum: 1, description: 'Optional: 1-indexed start line for partial content retrieval.' },
-                range_line_count: { type: 'integer', minimum: 0, description: 'Optional: Number of lines to retrieve from start line (0 means to end of note).' }
+                id: { type: 'string | string[]', description: 'A single Note ID or an array of up to 20 Note IDs to retrieve. (Required)' },
+                local_version: { type: 'integer', description: 'Optional: specific local version of the note to retrieve. Default: latest. (Applies if a single ID is provided).' },
+                range_line_start: { type: 'integer', minimum: 1, description: 'Optional: 1-indexed start line for partial content retrieval. Default: 1. (Applies if a single ID is provided).' },
+                range_line_count: { type: 'integer', minimum: 0, description: 'Optional: Number of lines to retrieve from start line (0 means to end of note). Default: all lines from start. (Applies if a single ID is provided).' }
               }
             },
           },
           {
-            name: 'save_note',
-            title: 'Save note',
-            description: 'Saves a note. This can be used to create a new note or update an existing one. Supports providing full text content or line-based patches for efficient updates.',
+            name: 'save_notes',
+            title: 'Save Note(s)',
+            description: 'Saves one or more notes. Can be used to create new notes or update existing ones. Supports providing full text content or line-based patches for efficient updates. Returns a list of successfully saved notes.',
             inputSchema: {
               type: 'object',
+              required: ['notes'],
               properties: {
-                id: { type: 'string', description: 'Optional note ID for updates' },
-                local_version: { type: 'integer', description: 'Local version, required for updates' },
-                server_version: { type: 'integer', description: 'Server version, for conflict detection' },
-                text: { type: 'string', description: 'Note content' },
-                text_patch: { type: 'array', items: { $ref: '#/definitions/patchOperation' }, description: 'Line-based patch for note content' },
-                tags: { type: 'array', items: { type: 'string' }, description: 'Note tags' }
+                notes: {
+                  type: 'array',
+                  minItems: 1,
+                  maxItems: 20,
+                  description: 'An array of note objects to save (1-20 notes per call).',
+                  items: {
+                    type: 'object',
+                    // required: [], // Individual note requirements are handled by SingleSaveObjectSchema internal refinements
+                    properties: {
+                      id: { type: 'string', description: 'Optional note ID for updates. Default: a new note is created.' },
+                      local_version: { type: 'integer', description: 'Local version, required for updates to an existing note.' },
+                      server_version: { type: 'integer', description: 'Server version for conflict detection. (Optional)' },
+                      text: { type: 'string', description: 'Full note content. (Required if text_patch not used)' },
+                      text_patch: { type: 'array', items: { $ref: '#/definitions/patchOperation' }, description: 'Line-based patch. (Required if text not used)' },
+                      tags: { type: 'array', items: { type: 'string' }, description: 'Note tags. (Optional)' },
+                      trash: { type: 'boolean', description: 'Set trash status. (Optional, Default: false)' }
+                    }
+                  }
+                }
               }
             },
           },
@@ -200,8 +214,8 @@ export async function handleMcpRequest(
                   enum: ['trash', 'untrash', 'delete_permanently', 'get_stats', 'reset_cache'],
                   description: 'Action to perform'
                 },
-                id: { type: 'string', description: 'Note ID for note actions' },
-                local_version: { type: 'integer', description: 'Local version, required for note actions' }
+                id: { type: 'string', description: 'Note ID for note actions. (Optional, not used for get_stats/reset_cache)' },
+                local_version: { type: 'integer', description: 'Local version, required for note actions. (Optional, not used for get_stats/reset_cache)' }
               }
             },
           }
@@ -223,12 +237,12 @@ export async function handleMcpRequest(
       };
     }
 
-    const actualMethodKey = params.name; // e.g., "list_notes", "get_note"
+    const actualMethodKey = params.name; // e.g., "list_notes", "get_notes", "save_notes"
     const toolImplementation = (toolImplementations as any)[actualMethodKey];
 
     if (typeof toolImplementation === 'function') {
       try {
-        logger.info({ toolName: actualMethodKey, params: params.arguments }, 'Dispatching to tool');
+        logger.info({ toolName: actualMethodKey, params: params.arguments }, `Dispatching to tool: ${actualMethodKey}`);
         // Pass params.arguments as the arguments to the actual tool function
         // Different tools have different signatures, handle accordingly
         let result;
@@ -241,14 +255,14 @@ export async function handleMcpRequest(
           toolName: actualMethodKey, 
           responseId: id,
           hasResult: !!result
-        }, 'Sending tools/call response');
+        }, `Sending tools/call response for ${actualMethodKey}`);
         return {
           jsonrpc: '2.0',
           id,
           result,
         };
       } catch (error: any) {
-        logger.error({ err: error, toolName: actualMethodKey }, 'Error executing tool');
+        logger.error({ err: error, toolName: actualMethodKey }, `Error executing tool: ${actualMethodKey}`);
         return {
           jsonrpc: '2.0',
           id,
@@ -256,11 +270,11 @@ export async function handleMcpRequest(
         };
       }
     } else {
-      logger.warn({ toolNameFromMcp: actualMethodKey, available: Object.keys(toolImplementations) }, 'Method not found in toolImplementations');
+      logger.warn({ toolNameFromMcp: actualMethodKey, available: Object.keys(toolImplementations) }, `Method ${actualMethodKey} not found in toolImplementations`);
       return {
         jsonrpc: '2.0',
         id,
-        error: { code: -32601, message: `Method not found: ${actualMethodKey}. Available methods: ${Object.keys(toolImplementations).join(', ')}` },
+        error: { code: -32601, message: `Method not found: ${actualMethodKey}. Available: ${Object.keys(toolImplementations).join(', ')}` },
       };
     }
   } else {
