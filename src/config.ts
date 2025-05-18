@@ -84,8 +84,9 @@ function validateLogLevel(
     'error',
     'fatal',
   ];
-  if (level && validLevels.includes(level as AppConfig['LOG_LEVEL'])) {
-    return level as AppConfig['LOG_LEVEL'];
+  const lowerCaseLevel = level?.toLowerCase();
+  if (lowerCaseLevel && validLevels.includes(lowerCaseLevel as AppConfig['LOG_LEVEL'])) {
+    return lowerCaseLevel as AppConfig['LOG_LEVEL'];
   }
   if (level) {
     logger.warn(`Invalid LOG_LEVEL: "${level}". Defaulting to '${defaultValue}'.`);
