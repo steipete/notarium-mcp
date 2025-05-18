@@ -62,11 +62,6 @@ let accessToken: string | null = null;
 let apiClient: AxiosInstance;
 
 export async function getAccessToken(username?: string, password?: string): Promise<string> {
-  if (process.env.TEST_MODE === '1') {
-    logger.info('TEST_MODE enabled, returning mock access token');
-    return 'mock-access-token-for-testing-purposes-only';
-  }
-
   // Ensure username and password are provided
   const user = username || config.SIMPLENOTE_USERNAME || '';
   const pass = password || config.SIMPLENOTE_PASSWORD || '';
@@ -220,52 +215,22 @@ function initializeApiClient(token: string): void {
   );
 }
 
-// Ensure API client is initialized on first import or first call.
 // Call getAccessToken once to either load existing or fetch new one.
 // This also initializes apiClient.
-if (process.env.TEST_MODE === '1') {
-  logger.info('TEST_MODE enabled, skipping initial authentication');
-  // Initialize with mock client in test mode
-  initializeApiClient('mock-access-token-for-testing-purposes-only');
-} else {
-  getAccessToken(config.SIMPLENOTE_USERNAME, config.SIMPLENOTE_PASSWORD).catch((err) => {
-    // Log initial auth errors but don't prevent module loading if auth is deferred to first API call.
-    // However, most operations will fail if this initial auth fails.
-    // The design implies auth happens early.
-    logger.error({ err }, 'Initial Simperium authentication attempt failed during module load.');
-    // Depending on strictness, could throw here or let subsequent calls fail.
-    // For now, allow module to load; subsequent API calls will trigger auth if accessToken is still null.
-  });
-}
+getAccessToken(config.SIMPLENOTE_USERNAME, config.SIMPLENOTE_PASSWORD).catch((err) => {
+  // Log initial auth errors but don't prevent module loading if auth is deferred to first API call.
+  // However, most operations will fail if this initial auth fails.
+  // The design implies auth happens early.
+  logger.error({ err }, 'Initial Simperium authentication attempt failed during module load.');
+  // Depending on strictness, could throw here or let subsequent calls fail.
+  // For now, allow module to load; subsequent API calls will trigger auth if accessToken is still null.
+});
 
 /**
  * Gets the initialized Axios client for Simperium API calls.
  * Ensures authentication has been attempted.
  */
 export async function getSimperiumApiClient(): Promise<AxiosInstance> {
-  if (process.env.TEST_MODE === '1') {
-    logger.info('TEST_MODE enabled, returning mock API client');
-    
-    // Create a mock API client that returns empty data for all methods
-    const mockClient = axios.create({
-      baseURL: 'https://example.com',
-    });
-    
-    // Mock interceptor for all requests
-    mockClient.interceptors.request.use((config) => {
-      logger.info(`Mock API client intercepted request to: ${config.url}`);
-      return config;
-    });
-    
-    // Mock interceptor for all responses
-    mockClient.interceptors.response.use((response) => {
-      logger.info('Mock API client returning successful mock response');
-      return response;
-    });
-    
-    return mockClient;
-  }
-
   if (!accessToken || !apiClient) {
     // This ensures that if initial auth failed or token expired, we try again.
     await getAccessToken(config.SIMPLENOTE_USERNAME, config.SIMPLENOTE_PASSWORD);
@@ -294,61 +259,6 @@ interface GetIndexParams {
  * @returns SimperiumIndexResponse containing notes and pagination mark
  */
 export async function getIndex(params: GetIndexParams): Promise<SimperiumIndexResponse> {
-  if (process.env.TEST_MODE === '1') {
-    logger.info('TEST_MODE enabled, returning mock index data');
-    
-    // Create mock notes with realistic data
-    const mockNotes = [
-      {
-        id: 'note1',
-        v: 1,
-        d: {
-          content: 'This is a mock note for testing purposes',
-          creationDate: Date.now(),
-          modificationDate: Date.now(),
-          deleted: false,
-          systemTags: [],
-          tags: ['test', 'mock'],
-          shareURL: '',
-          publishURL: '',
-        }
-      },
-      {
-        id: 'note2',
-        v: 1,
-        d: {
-          content: 'Another mock note with different content',
-          creationDate: Date.now() - 86400000, // yesterday
-          modificationDate: Date.now() - 3600000, // 1 hour ago
-          deleted: false,
-          systemTags: [],
-          tags: ['important', 'test'],
-          shareURL: '',
-          publishURL: '',
-        }
-      },
-      {
-        id: 'note3',
-        v: 1,
-        d: {
-          content: 'A third mock note that is deleted',
-          creationDate: Date.now() - 172800000, // 2 days ago
-          modificationDate: Date.now() - 86400000, // yesterday
-          deleted: true,
-          systemTags: [],
-          tags: [],
-          shareURL: '',
-          publishURL: '',
-        }
-      }
-    ];
-    
-    return {
-      index: mockNotes,
-      current: 'mock-cursor-token'
-    };
-  }
-
   try {
     const client = await getSimperiumApiClient();
     const path = `${params.bucketName}/index`;
