@@ -145,7 +145,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 *   **Simplenote User Credentials (`SIMPLENOTE_USERNAME`, `SIMPLENOTE_PASSWORD`):** Provided via environment variables. Handled by `Backend API Client` for Simperium authentication. Must not be logged directly.
 *   **Simperium Application Constants (Hard-coded in `BackendApiClient.ts`):**
     *   `SIMPERIUM_APP_ID = 'chalk-bump-f49'`
-    *   `SIMPERIUM_API_KEY = 'c8c2b86337154cdabc989b23e30c6bf4'`
+    *   `SIMPERIUM_API_KEY = 'e2f0978acfea407aa23fdf557478d3f2'`
 *   **Database Encryption Key (`DB_ENCRYPTION_KEY`):**
     *   Provided via environment variable. If set, enables SQLCipher encryption.
     *   **Documentation MUST emphasize choosing a strong, unique passphrase.**
