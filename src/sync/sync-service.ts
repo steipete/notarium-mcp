@@ -95,10 +95,23 @@ export class BackendSyncService {
 
     const startTime = Date.now();
     try {
-      const backendCursorRow = this.db
+      // Ensure sync_metadata table exists before first query
+      try {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS sync_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT
+          );
+        `);
+      } catch (tableErr) {
+        logger.warn({ err: tableErr }, 'Error ensuring sync_metadata table exists');
+      }
+      
+      // Now safe to query sync_metadata
+      const cursorRow = this.db
         .prepare("SELECT value FROM sync_metadata WHERE key = 'backend_cursor'")
         .get() as { value: string } | undefined;
-      let backendCursor: string | null = backendCursorRow?.value || null;
+      let backendCursor: string | null = cursorRow?.value || null;
 
       if ((global as any).fullResyncRequiredByReset) {
         logger.info('Full resync triggered by cache reset.');
@@ -147,7 +160,7 @@ export class BackendSyncService {
     logger.info('Starting full sync...');
     let currentMark: string | undefined = undefined;
     let notesProcessedTotal = 0;
-    let finalCursor: string | null = null;
+    let finalCursorToStore: string | null = null; // This will hold the actual cursor to save
     let indexResponse: SimperiumIndexResponse | undefined = undefined; // Declare here for loop condition
 
     do {
@@ -159,13 +172,11 @@ export class BackendSyncService {
         data: false,
       });
 
-      finalCursor = indexResponse.current;
+      finalCursorToStore = indexResponse.current; // Always update with the latest cursor from API
 
       if (!indexResponse.index || indexResponse.index.length === 0) {
-        logger.info('Full sync: No more items in index to process for this page.');
-        if (!currentMark) {
-          logger.info('Full sync: Index is empty.');
-        }
+        logger.info('Full sync: Page was empty, no more items. Loop will terminate.');
+        currentMark = undefined; // Ensure loop termination
         break;
       }
 
@@ -176,17 +187,26 @@ export class BackendSyncService {
       }
       notesProcessedTotal += notesProcessedThisPage;
       logger.info(
-        `Full sync: Processed page with ${notesProcessedThisPage} notes. Total so far: ${notesProcessedTotal}. Next cursor: ${finalCursor}`,
+        `Full sync: Processed page with ${notesProcessedThisPage} notes. Limit: ${FULL_SYNC_PAGE_SIZE}. Total so far: ${notesProcessedTotal}. Cursor from this page: ${finalCursorToStore}`
       );
 
-      currentMark = finalCursor;
-    } while (currentMark); // Loop as long as Simperium provides a next cursor/mark
+      if (notesProcessedThisPage < FULL_SYNC_PAGE_SIZE) {
+        logger.info(`Full sync: Fetched page was not full (${notesProcessedThisPage} < ${FULL_SYNC_PAGE_SIZE}), indicating the end of data. Loop will terminate.`);
+        currentMark = undefined; // Ensure loop termination
+      } else {
+        currentMark = finalCursorToStore; // Use the cursor from this page for the next mark
+        if (!currentMark) { // If API returned null/undefined cursor even with a full page (defensive)
+             logger.warn("Full sync: API returned a full page but a falsy cursor. Terminating sync to prevent issues.");
+             break; // Terminate if the cursor to continue with is falsy
+        }
+      }
+    } while (currentMark); // Loop as long as currentMark suggests more pages
 
-    if (finalCursor) {
+    if (finalCursorToStore) {
       this.db
         .prepare("INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('backend_cursor', ?)")
-        .run(finalCursor);
-      logger.info(`Full sync completed. Stored final backend cursor: ${finalCursor}`);
+        .run(finalCursorToStore);
+      logger.info(`Full sync completed. Stored final backend cursor: ${finalCursorToStore}`);
     } else {
       // This case (no final cursor after processing items) would be unusual if indexResponse.index had items.
       // If the index was empty from the start, finalCursor would be the initial (null/undefined) current from first empty response.
@@ -352,6 +372,14 @@ export class BackendSyncService {
 
   private updateSyncMetadata(): void {
     try {
+      // First ensure the table exists
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS sync_metadata (
+          key TEXT PRIMARY KEY,
+          value TEXT
+        );
+      `);
+      
       this.db
         .prepare(
           "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('last_sync_attempt_at', ?)",
