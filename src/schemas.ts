@@ -67,7 +67,7 @@ export const ListInputSchema = z.object({
   limit: z.number().int().min(1).max(100).default(20).optional(),
   page: z.number().int().min(1).default(1).optional(),
   // Number of leading lines of each note to include in the preview text (minimum 1, max 20).
-  preview_lines: z.number().int().min(1).max(20).default(1).optional(),
+  preview_lines: z.number().int().min(1).max(20).default(3).optional(),
 });
 export type ListInput = z.infer<typeof ListInputSchema>;
 
