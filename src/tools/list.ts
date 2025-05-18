@@ -10,7 +10,7 @@ import { NotariumDbError } from '../errors.js';
 export async function handleList(params: ListInput, db: DB): Promise<ListOutput> {
   logger.debug({ params }, 'Handling list tool request');
 
-  const { query, tags, limit = 20, page = 1, trash_status = 0, date_before, date_after, sort_by, sort_order, preview_lines = 1 } =
+  const { query, tags, limit = 20, page = 1, trash_status = 0, date_before, date_after, sort_by, sort_order, preview_lines = 3 } =
     params;
 
   const sqlWhereClauses: string[] = [];

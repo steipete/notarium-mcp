@@ -201,7 +201,19 @@ export async function handleSave(params: SaveInput, db: DB): Promise<SaveOutput>
           : Math.floor(currentNote?.created_at), 
       trash: savedSimperiumNote.data.deleted || false,
     };
-    return NoteDataSchema.parse(resultNoteData);
+    // Produce list-style wrapper for UI compatibility
+    const firstLinesArr = currentText.split('\n');
+    const previewText = firstLinesArr.slice(0, 3).join('\n').trim() || '(empty note)';
+    const listItem = {
+      type: 'text',
+      uuid: id!,
+      text: previewText,
+      local_version: newLocalVersion,
+      tags: resultNoteData.tags,
+      modified_at: resultNoteData.modified_at,
+      trash: resultNoteData.trash,
+    };
+    return { content: [listItem], total_items: 1, current_page: 1, total_pages: 1 } as any;
   } catch (error) {
     // This block now primarily expects NotariumError subtypes or falls back to generic Error
     if (

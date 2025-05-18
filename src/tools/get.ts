@@ -14,6 +14,7 @@ import {
 export async function handleGet(params: GetInput, db: DB): Promise<GetOutput> {
   logger.debug({ params }, 'Handling get tool request');
   const { id, local_version, range_line_start, range_line_count } = params;
+  const preview_lines = 3;
 
   let noteRow: any; // Will be validated later by schema
   try {
@@ -106,7 +107,27 @@ export async function handleGet(params: GetInput, db: DB): Promise<GetOutput> {
   }
 
   try {
-    return NoteDataSchema.parse(fullNoteData);
+    // Convert to list-style item for compatibility with some clients
+    const firstLinesArr = fullNoteData.text.split('\n');
+    const previewLinesCount = Math.min(preview_lines, firstLinesArr.length);
+    const previewText = firstLinesArr.slice(0, previewLinesCount).join('\n').trim() || '(empty note)';
+
+    const listStyleItem = {
+      type: 'text',
+      uuid: fullNoteData.id,
+      text: previewText,
+      local_version: fullNoteData.local_version,
+      tags: fullNoteData.tags,
+      modified_at: fullNoteData.modified_at,
+      trash: fullNoteData.trash,
+    };
+
+    return {
+      content: [listStyleItem],
+      total_items: 1,
+      current_page: 1,
+      total_pages: 1,
+    } as any;
   } catch (err) {
     logger.error(
       { err, noteData: fullNoteData, issues: (err as any).issues },
