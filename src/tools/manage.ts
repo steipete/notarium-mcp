@@ -49,7 +49,7 @@ function wrapResultForUi(result: any): any {
     content: [
       {
         type: 'text',
-        uuid: result.id ? String(result.id) : 'manage_result',
+        id: result.id ? String(result.id) : 'manage_result',
         text: preview.slice(0, 200),
         local_version: 0,
         tags: [],

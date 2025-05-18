@@ -16,7 +16,7 @@ export const NoteTagsSchema = z.array(NoteTagSchema).max(100, 'Too many tags'); 
 
 export const ListItemSchema = z.object({
   type: z.literal('text').default('text'),
-  uuid: z.string().min(1), // Maps to note ID
+  id: z.string().min(1), // Note ID
   text: z.string().min(1, 'Preview text must be non-empty'), // Full first line of the note
   local_version: z.number().int(),
   tags: NoteTagsSchema,

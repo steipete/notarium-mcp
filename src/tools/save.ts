@@ -187,7 +187,7 @@ async function saveSingleNoteInternally(
     
     return ListItemSchema.parse({
         type: 'text',
-        uuid: id!,
+        id: id!,
         text: previewText,
         local_version: newLocalVersion,
         tags: savedSimperiumNote.data.tags || [],

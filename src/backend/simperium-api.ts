@@ -430,19 +430,19 @@ export async function saveNote(
 
   try {
     // apiClient has baseURL, so urlPath should be relative
-    const response = await client.post<SimperiumNoteResponseData['data']>(
+    const response = await client.post<SimperiumNoteResponseData['data']>( // Simperium returns the object data directly on POST for create/update
       urlPath,
       payload,
       requestConfig,
     );
 
     const responseVersionHeader = response.headers['x-simperium-version'];
+
     if (!responseVersionHeader) {
       logger.warn(
         { headers: response.headers, noteId },
         'Simperium save response missing x-simperium-version header.',
       );
-      // Fallback or throw, depending on strictness. For now, attempt to use provided baseVersion or assume 0 if new.
     }
 
     let newServerVersion: number;
@@ -468,7 +468,7 @@ export async function saveNote(
     }
 
     return {
-      id: noteId, // ID remains the same
+      id: noteId, // ID remains the same as client-generated for this path
       version: newServerVersion,
       data: response.data, // Simperium returns the object data directly on POST for create/update
     };
