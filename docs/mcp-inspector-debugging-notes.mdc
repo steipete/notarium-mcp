@@ -1,0 +1,69 @@
+# MCP Inspector Debugging Notes
+
+## Key Issues Identified
+
+1. **JSON-RPC Protocol Requirements**
+   - MCP Inspector requires proper JSON-RPC 2.0 protocol implementation
+   - Specific handlers needed for 'initialize', 'tools/list', and 'tools/call' methods
+   - Error responses must conform to JSON-RPC spec structure
+
+2. **Authentication Issues**
+   - Persistent network issues with Simperium authentication (timeouts to auth.simperium.com)
+   - Authentication attempts consistently failed after 30 seconds
+   - Module import sequence caused authentication to block startup flow
+
+3. **Database Initialization**
+   - SQLite tables weren't being created without successful authentication
+   - "no such table: notes" errors occurred when trying to use tools
+   - Database initialization logic was dependent on connection status
+
+## Solutions Implemented
+
+1. **Protocol Compatibility**
+   - Added proper JSON-RPC 2.0 request/response handling
+   - Implemented required MCP protocol methods
+   - Fixed error response structure to be spec-compliant
+
+2. **Test Mode Implementation**
+   - Added TEST_MODE=1 environment variable support
+   - Modified simperium-api.ts to return mock data when in test mode
+   - Created mock implementations of key authentication functions
+
+3. **Database Schema Initialization**
+   - Modified database startup sequence to create tables regardless of connection status
+   - Added validation to ensure essential tables exist even for existing databases
+   - Improved error handling during table creation
+
+## Best Practices for MCP Inspector Integration
+
+1. **Environment Setup**
+   - Always run with TEST_MODE=1 during development to avoid authentication issues
+   - Set proper environment variables: TEST_MODE, SIMPLENOTE_USERNAME, SIMPLENOTE_PASSWORD
+   - Use absolute paths when connecting from MCP Inspector
+
+2. **Debugging Workflow**
+   - Check server logs for detailed error information
+   - Pay attention to the Inspector console for client-side errors
+   - Test basic functionality with Inspector's "List Tools" before trying specific tools
+
+3. **Code Organization**
+   - Keep protocol handling separate from business logic
+   - Implement proper error handling at both protocol and application levels
+   - Ensure database is properly initialized during startup
+
+## Future Considerations
+
+1. **Database Management**
+   - Consider adding migration support for schema changes
+   - Add database integrity checks during startup
+   - Provide utilities for database inspection and repair
+
+2. **Testing**
+   - Add specific tests for MCP protocol interaction
+   - Create fixtures for test data
+   - Test with various Inspector versions
+
+3. **Error Handling**
+   - Improve error messages to be more user-friendly
+   - Add more diagnostic information in error responses
+   - Consider adding a debug mode for detailed logging
