@@ -147,14 +147,10 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 *   **Simperium Application Constants (Hard-coded in `BackendApiClient.ts`):**
     *   `SIMPERIUM_APP_ID = 'chalk-bump-f49'`
     *   `SIMPERIUM_API_KEY = 'e2f0978acfea407aa23fdf557478d3f2'`
-*   **Database Encryption Key (`DB_ENCRYPTION_KEY`):**
-    *   Provided via environment variable. **Currently NOT USED for database file encryption as `sql.js` is used instead of SQLCipher.** The `sql.js` library loads the database into memory; persistence is handled by reading/writing the entire DB image.
-    *   (Original SQLCipher Spec: Documentation MUST emphasize choosing a strong, unique passphrase. The key itself is never stored in the database. The derived key (after PBKDF2) is used by SQLCipher in memory.)
-*   **Salt for DB Key Derivation (`db_key_salt_hex`):**
-    *   **NOT CURRENTLY USED** as SQLCipher is not implemented.
-    *   (Original SQLCipher Spec: A 16-byte cryptographically secure random salt, generated using `crypto.randomBytes(16).toString('hex')`. Generated *once* when an encrypted database is first created by MCP Notarium. Stored in plaintext in the `sync_metadata` table (key: `db_key_salt_hex`) *inside the encrypted database*. SQLCipher needs this salt to be available *after* the database is opened with the main derived key if it were to re-derive or verify keys, but primarily it's for us to re-derive the key correctly on subsequent starts if we only have the user's passphrase. For SQLCipher's `PRAGMA cipher_kdf_salt`, it's set on DB creation and SQLCipher handles it internally.)
+*   **`DB_ENCRYPTION_KEY` Environment Variable:**
+    *   This variable is currently **NOT USED** for database file encryption in the `sql.js`-based implementation. If set, it is noted but does not encrypt the persisted SQLite file.
 *   **Salt for Owner Identity Hash (`OWNER_IDENTITY_SALT`):**
-    *   A hard-coded, unique, long, random string constant within MCP Notarium (e.g., `const OWNER_IDENTITY_SALT = "MCPNotarium_SimplenoteUserSalt_v1_a7b3c9d8e2f1";` - generate a new real one). Used as `sha256(SIMPLENOTE_USERNAME + OWNER_IDENTITY_SALT)`. The hash is used in the database filename to provide user-specific cache files.
+    *   A hard-coded, unique, long, random string constant within MCP Notarium. Used to derive a hash from `SIMPLENOTE_USERNAME` for the database filename, providing user-specific cache files.
 
 **6. Local Cache Module: SQLite with Optional SQLCipher**
 
@@ -178,12 +174,10 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
     4.  Attempt to load DB from file into `sql.js` instance.
         *   If file doesn't exist (`ENOENT`): Log INFO, set `new_db_required = true`.
         *   On other load failures (e.g., corrupt file): Log INFO "DB corrupt?", delete DB file, set `new_db_required = true`.
-    5.  (Original SQLCipher checks for encrypted/unencrypted mode mismatch are NOT APPLICABLE).
-    6.  (Original SQLCipher warning for unencrypted mode is NOT APPLICABLE as it's always unencrypted with current `sql.js` setup).
-    7.  **If DB loaded successfully and not `new_db_required`:**
-        *   `db_schema_ver = db.pragma('user_version', {simple: true});`. `CURRENT_APP_SCHEMA_VERSION = 1;` (or current version).
-        *   If `db_schema_ver < CURRENT_APP_SCHEMA_VERSION` or (`db_schema_ver == 0` and DB is not empty): Log INFO "Schema too old", delete DB file, set `new_db_required = true`.
-        *   If `db_schema_ver > CURRENT_APP_SCHEMA_VERSION`: Log INFO "Schema too new", delete DB file, set `new_db_required = true`.
+    5.  **If DB loaded successfully and not `new_db_required`:**
+        *   `db_schema_version = db.pragma('user_version', {simple: true});`. `CURRENT_APP_SCHEMA_VERSION = 1;` (or current version).
+        *   If `db_schema_version < CURRENT_APP_SCHEMA_VERSION` or (`db_schema_version == 0` and DB is not empty): Log INFO "Schema too old", delete DB file, set `new_db_required = true`.
+        *   If `db_schema_version > CURRENT_APP_SCHEMA_VERSION`: Log INFO "Schema too new", delete DB file, set `new_db_required = true`.
         *   (Original SQLCipher spec for `owner_identity_hash` check *inside* the DB is not implemented. The filename provides some level of owner separation).
 *   **SQLite PRAGMAs (after successful open/keying):**
     *   `PRAGMA journal_mode=WAL;`
@@ -306,7 +300,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 *   **10.3. Tool: `save`**
     *   (As per v3.2. `local_version` required for updates. Handles `text` OR `text_patch`. `text_patch` line numbers 1-indexed, relative to `local_version`'s content state of `text`. Server processes `del` (high to low ln), `mod`, `add` (low to high ln). Synchronous backend write using `server_version` from local DB or input. Updates local cache only on Simperium success with Simperium's response object, prioritizing `response_note.version` for new `server_version`. Handles Simperium 409/412 version conflict with specific `NotariumError` and resolution hint). Input uses `local_version`, `server_version`, `text` or `text_patch`. Output maps to `local_version`, `server_version`, `text`.
 *   **10.4. Tool: `manage`**
-    *   (As per v3.2. Note actions are sync backend-first. `local_version` mandatory for note actions. `get_stats` populates full `ServerStatsSchema`. `reset_cache` deletes DB files, sets `global.fullResyncRequiredByReset = true`). Input for note actions uses `local_version` and `action`. Output includes `new_local_version` and `new_server_version`.
+    *   (As per v3.2. Note actions are sync backend-first. `local_version` mandatory for note actions. `get_stats` populates full `ServerStatsSchema`, including `mcp_notarium_version` from `package.json`, `node_version` from `process.version`, `memory_rss_mb` from `process.memoryUsage().rss`. `db_encryption` status will be 'disabled' or 'unavailable' reflecting the `sql.js` setup. `reset_cache` deletes DB files, sets `global.fullResyncRequiredByReset = true`). Input for note actions uses `local_version` and `action`. Output includes `new_local_version` and `new_server_version`.
 
 **11. NPM Dependencies & Project Setup**
 *   **Production:** `axios` (or `node-fetch`), `sql.js` (and its `.wasm` file), `zod`, `pino`, `uuid`, `dotenv`.
@@ -401,7 +395,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
     *   **Schema Migrations:** No automated, non-destructive schema migrations for the SQLite database. Schema changes will require deleting the old cache.
     *   **Single User Focus:** Designed for a single Simplenote account per MCP Notarium instance.
     *   **Tag Search via FTS:** Tags are filtered via SQL `WHERE` clauses on the JSON `tags` column, not directly integrated into the main FTS5 index of note content. This means combined FTS content search + tag search relies on SQLite's query optimizer.
-    *   **Database Unencrypted:** The local SQLite cache file is not encrypted in the current `sql.js`-based implementation.
+    *   **Database Unencrypted:** The local SQLite cache file is not encrypted by MCP Notarium in the current `sql.js`-based implementation.
 
 **20. Future Considerations (Post-V1)**
     *   Advanced fuzzy search integration (`fuse.js`).
