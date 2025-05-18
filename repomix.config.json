@@ -1,0 +1,25 @@
+{
+  "output": {
+    "filePath": "repomix-output.md",
+    "style": "markdown"
+  },
+  "include": [
+    "**/*"
+  ],
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "**/*.sqlite",
+      "**/*.sqlite3",
+      "**/*.db",
+      "**/*.wasm",
+      "**/sqlite-amalgamation-*/**",
+      "**/sql.js/cache/**",
+      "**/sql.js/dist/**",
+      "**/temp_build_sqljs/**",
+      "assets/*.wasm",
+      "node_modules/**"
+    ]
+  }
+}
