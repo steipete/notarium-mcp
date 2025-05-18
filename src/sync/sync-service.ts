@@ -80,10 +80,12 @@ export class BackendSyncService {
 
     logger.info(`Scheduling next sync in ${delay / 1000} seconds.`);
     this.syncTimeoutId = setTimeout(async () => {
-      await this.performSyncCycle();
-      // Reschedule after completion, unless stopped by max errors
-      if (this.consecutiveErrorCount < BackendSyncService.MAX_CONSECUTIVE_ERRORS) {
+      const didRescheduleOnError: boolean = await this.performSyncCycle();
+      // Reschedule after completion, unless stopped by max errors or self-rescheduled
+      if (!didRescheduleOnError && this.consecutiveErrorCount < BackendSyncService.MAX_CONSECUTIVE_ERRORS) {
         this.scheduleNextSync();
+      } else if (didRescheduleOnError) {
+        logger.debug('Sync cycle error handling led to self-reschedule via backoff. No further reschedule needed here.');
       } else {
         logger.error('BackendSyncService stopped due to maximum consecutive errors.');
         this.lastSyncStatus = 'stopped (max errors)';
@@ -92,10 +94,10 @@ export class BackendSyncService {
     }, delay);
   }
 
-  private async performSyncCycle(): Promise<void> {
+  private async performSyncCycle(): Promise<boolean> {
     if (this.isSyncing) {
       logger.warn('Sync cycle already in progress. Skipping this scheduled run.');
-      return;
+      return false; // Not an error, but didn't run, so no self-reschedule
     }
     this.isSyncing = true;
     this.lastSyncAttemptAt = Date.now() / 1000;
@@ -142,6 +144,7 @@ export class BackendSyncService {
       this.consecutiveErrorCount = 0;
       this.lastSyncStatus = 'idle (success)';
       logger.info('Backend synchronization cycle completed successfully.');
+      return false; // Successful, no self-reschedule
     } catch (error) {
       this.consecutiveErrorCount++;
       this.lastSyncStatus = `error (attempt ${this.consecutiveErrorCount})`;
@@ -158,8 +161,12 @@ export class BackendSyncService {
         this.isSyncing = false;
         this.lastSyncDurationMs = Date.now() - startTime;
         this.updateSyncMetadata();
-        return;
+        return true; // Self-rescheduled due to error
       }
+      // If max errors reached, do not reschedule via backoff here.
+      // The caller (scheduleNextSync's setTimeout) will see didRescheduleOnError as false
+      // and then check consecutiveErrorCount to log the MAX_ERRORS stop.
+      return false; // Max errors reached, did not self-reschedule via backoff
     } finally {
       this.isSyncing = false;
       this.lastSyncDurationMs = Date.now() - startTime;
