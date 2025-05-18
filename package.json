@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --out-dir dist",
     "start": "node dist/index.js",
-    "dev": "tsup src/index.ts --format esm --dts --out-dir dist --watch --onSuccess \"node dist/index.js\"",
+    "dev": "tsup src/index.ts --format esm --dts --out-dir dist --watch --onSuccess \"node dist/index.js\" --external pino-pretty",
     "lint": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix",
     "lint:check-format": "prettier --check \"src/**/*.ts\" \"docs/**/*.md\" \"*.{js,json,md,cjs}\"",
@@ -36,7 +36,7 @@
     "zod": "^3.24.4"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.9",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.12.7",
     "@types/uuid": "^9.0.8",
     "@typescript-eslint/eslint-plugin": "^7.7.0",
