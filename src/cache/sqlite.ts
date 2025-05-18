@@ -238,7 +238,8 @@ function createSchema(db: SqlJsDatabase): void {
       mod_at INTEGER NOT NULL, -- Unix epoch seconds
       l_ver INTEGER NOT NULL DEFAULT 1, -- Local version, starts at 1, increments on local change
       s_ver INTEGER, -- Simperium version (optional, from backend)
-      trash INTEGER NOT NULL DEFAULT 0 -- Boolean (0 or 1)
+      trash INTEGER NOT NULL DEFAULT 0, -- Boolean (0 or 1)
+      sync_deleted INTEGER NOT NULL DEFAULT 0 -- Added: To track if delete was confirmed by sync
     );
 
     CREATE INDEX IF NOT EXISTS idx_notes_mod_at ON notes(mod_at);
@@ -264,28 +265,21 @@ function createSchema(db: SqlJsDatabase): void {
     END;
 
     CREATE TABLE IF NOT EXISTS sync_metadata (
-      key   TEXT PRIMARY KEY,
+      key TEXT PRIMARY KEY NOT NULL,
       value TEXT
     );
-  `);
 
-  // Initialize essential metadata
-  const stmt = db.prepare('INSERT OR IGNORE INTO sync_metadata (key, value) VALUES (?, ?)');
-  try {
-    stmt.run(['backend_cursor', '']); // For Simperium sync
-    stmt.run(['last_sync_start_ts', '0']);
-    stmt.run(['last_sync_end_ts', '0']);
-    stmt.run(['last_sync_status', 'never_synced']); // e.g., success, failed, in_progress
-    stmt.run(['last_sync_error', '']);
-    stmt.run(['total_notes_synced', '0']);
-    stmt.run(['notes_added_last_sync', '0']);
-    stmt.run(['notes_updated_last_sync', '0']);
-    stmt.run(['notes_deleted_locally_last_sync', '0']); 
-    logger.debug('[SQLite Cache] Initial sync_metadata inserted.');
-  } finally {
-    stmt.free();
-  }
-  logger.info('[SQLite Cache] Database schema created/verified.');
+    -- Initialize some default metadata values if they don't exist
+    -- This helps in having a consistent state for the UI or metrics later
+    INSERT OR IGNORE INTO sync_metadata (key, value) VALUES ('last_sync_start_ts', '0');
+    INSERT OR IGNORE INTO sync_metadata (key, value) VALUES ('last_sync_end_ts', '0');
+    INSERT OR IGNORE INTO sync_metadata (key, value) VALUES ('last_sync_error', '');
+    INSERT OR IGNORE INTO sync_metadata (key, value) VALUES ('total_notes_synced', '0');
+    INSERT OR IGNORE INTO sync_metadata (key, value) VALUES ('notes_added_last_sync', '0');
+    INSERT OR IGNORE INTO sync_metadata (key, value) VALUES ('notes_updated_last_sync', '0');
+    INSERT OR IGNORE INTO sync_metadata (key, value) VALUES ('notes_deleted_locally_last_sync', '0');
+  `);
+  logger.info('[SQLite Cache] Database schema created/verified with default metadata.');
 }
 
 
