@@ -1,12 +1,13 @@
-import dotenv from 'dotenv';
+//import dotenv from 'dotenv';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import logger from './logging.js'; // Logger is used by helper functions, so import is not unused
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import path from 'path';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import fs from 'fs';
+import { z } from 'zod';
 
-dotenv.config(); // Load .env file into process.env
+//dotenv.config(); // Load .env file into process.env
 
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
@@ -29,11 +30,8 @@ try {
 // As per spec 5. Salt for Owner Identity Hash: A hard-coded, unique, long, random string constant.
 // Replace this placeholder with a newly generated, truly random string for any production-like deployment.
 const OWNER_IDENTITY_SALT_CONSTANT =
-  'MCPNotarium_SimplenoteUserSalt_v1_a7b3c9d8e2f1_ChangeMePlease';
+  'GENERATED_RANDOM_HEX_STRING_REPLACE_ME_32_CHARS'; // IMPORTANT: Replace with a unique, cryptographically secure random 32-character hex string
 
-// TODO: Remove hardcoded credentials before commit/production!
-const TEMP_HARDCODED_USERNAME = "steipete+simpletest@gmail.com";
-const TEMP_HARDCODED_PASSWORD = "MAbVuzegRZ2U9dz7wJHi";
 const DEFAULT_LOG_FILE_PATH = "./notarium-debug.log"; // Default log file
 
 export interface AppConfig {
@@ -96,8 +94,8 @@ function validateLogLevel(
 }
 
 export const config: AppConfig = {
-  SIMPLENOTE_USERNAME: process.env.SIMPLENOTE_USERNAME || TEMP_HARDCODED_USERNAME,
-  SIMPLENOTE_PASSWORD: process.env.SIMPLENOTE_PASSWORD || TEMP_HARDCODED_PASSWORD,
+  SIMPLENOTE_USERNAME: process.env.SIMPLENOTE_USERNAME,
+  SIMPLENOTE_PASSWORD: process.env.SIMPLENOTE_PASSWORD,
   DB_ENCRYPTION_KEY: process.env.DB_ENCRYPTION_KEY,
   DB_ENCRYPTION_KDF_ITERATIONS: parseIntEnv(
     process.env.DB_ENCRYPTION_KDF_ITERATIONS,
@@ -121,11 +119,11 @@ export const config: AppConfig = {
 
 export function validateConfig(): void {
   if (!config.SIMPLENOTE_USERNAME) {
-    logger.fatal('Missing SIMPLENOTE_USERNAME in env and no hardcoded fallback.');
+    logger.fatal('Missing SIMPLENOTE_USERNAME in environment variables. This is a required configuration.');
     process.exit(1);
   }
   if (!config.SIMPLENOTE_PASSWORD) {
-    logger.fatal('Missing SIMPLENOTE_PASSWORD in env and no hardcoded fallback.');
+    logger.fatal('Missing SIMPLENOTE_PASSWORD in environment variables. This is a required configuration.');
     process.exit(1);
   }
 
@@ -139,19 +137,19 @@ export function validateConfig(): void {
 
 /* eslint-disable no-console */
 export async function printConfigVars(): Promise<void> {
-  console.log('Current MCP Notarium Configuration (NOTE: May show hardcoded test credentials if used):');
+  console.log('Current MCP Notarium Configuration:');
   console.log('------------------------------------------------------------------------------------');
   const toPrint = { ...config };
 
-  if (toPrint.SIMPLENOTE_PASSWORD && toPrint.SIMPLENOTE_PASSWORD !== TEMP_HARDCODED_PASSWORD) {
+  if (toPrint.SIMPLENOTE_PASSWORD) {
     toPrint.SIMPLENOTE_PASSWORD = '******** (from ENV)';
-  } else if (toPrint.SIMPLENOTE_PASSWORD === TEMP_HARDCODED_PASSWORD) {
-    toPrint.SIMPLENOTE_PASSWORD = '******** (hardcoded test default)';
+  } else {
+    toPrint.SIMPLENOTE_PASSWORD = '<Not Set - Required>';
   }
-  if (toPrint.SIMPLENOTE_USERNAME === TEMP_HARDCODED_USERNAME && process.env.SIMPLENOTE_USERNAME) {
-    toPrint.SIMPLENOTE_USERNAME = `${TEMP_HARDCODED_USERNAME} (from ENV overriding identical hardcoded default)`;
-  } else if (toPrint.SIMPLENOTE_USERNAME === TEMP_HARDCODED_USERNAME) {
-    toPrint.SIMPLENOTE_USERNAME = `${TEMP_HARDCODED_USERNAME} (hardcoded test default)`;
+  if (toPrint.SIMPLENOTE_USERNAME) {
+    toPrint.SIMPLENOTE_USERNAME = `${toPrint.SIMPLENOTE_USERNAME} (from ENV)`;
+  } else {
+    toPrint.SIMPLENOTE_USERNAME = '<Not Set - Required>';
   }
 
   if (toPrint.DB_ENCRYPTION_KEY) {
@@ -159,7 +157,7 @@ export async function printConfigVars(): Promise<void> {
   }
 
   for (const [key, value] of Object.entries(toPrint)) {
-    let source = '(hardcoded default or derived)';
+    let source = '(derived or default)'; // Simplified source
     if (process.env[key as keyof NodeJS.ProcessEnv] !== undefined) {
       source = `(from ENV: ${key})`;
     } else if (key === 'MCP_NOTARIUM_VERSION' || key === 'NODE_VERSION') {
@@ -168,31 +166,32 @@ export async function printConfigVars(): Promise<void> {
       source = '(hardcoded constant)';
     } else if (key === 'LOG_FILE_PATH' && value === DEFAULT_LOG_FILE_PATH && !process.env.LOG_FILE_PATH) {
       source = '(default path)';
-    } else if ((key === 'SIMPLENOTE_USERNAME' && value && (value as string).includes('(hardcoded test default)')) || 
-               (key === 'SIMPLENOTE_PASSWORD' && value && (value as string).includes('(hardcoded test default)')) ) {
-      source = '';
     } else if (key === 'LOG_LEVEL' && value === 'debug' && !process.env.LOG_LEVEL) {
       source = '(default level)';
+    } else if (value === undefined && (key === 'SIMPLENOTE_USERNAME' || key === 'SIMPLENOTE_PASSWORD')) {
+      source = '(Required, Not Set!)';
+    } else if (value === undefined) {
+      source = '(default or not set)';
     }
 
     console.log(`  ${key}: ${value === undefined ? '<Not Set>' : value} ${source}`);
   }
   console.log('-----------------------------------');
   console.log('Purpose of variables:');
-  console.log('  SIMPLENOTE_USERNAME: Your Simplenote email address. (Required - currently using test default if not set)');
-  console.log('  SIMPLENOTE_PASSWORD: Your Simplenote password. (Required - currently using test default if not set)');
+  console.log('  SIMPLENOTE_USERNAME: Your Simplenote email address. (Required)');
+  console.log('  SIMPLENOTE_PASSWORD: Your Simplenote password. (Required)');
   console.log('  DB_ENCRYPTION_KEY: Passphrase to encrypt local cache. (Optional)');
   console.log('  DB_ENCRYPTION_KDF_ITERATIONS: PBKDF2 iterations. (Default: 310000)');
   console.log('  SYNC_INTERVAL_SECONDS: Sync frequency. (Default: 300s, Min: 60s)');
   console.log('  API_TIMEOUT_SECONDS: API call timeout. (Default: 30s, Min: 5s)');
   console.log('  LOG_LEVEL: Logging verbosity. (Default: debug)');
   console.log(`  LOG_FILE_PATH: Path for logs. (Default: ${DEFAULT_LOG_FILE_PATH})`);
-  console.log(`  OWNER_IDENTITY_SALT: Salt for DB owner verification. (Internal Constant)`);
+  console.log(`  OWNER_IDENTITY_SALT: Salt for DB owner verification. (Internal Constant - Ensure this is unique and secret!)`);
   console.log('  MCP_NOTARIUM_VERSION: Application version. (Derived)');
   console.log('  NODE_VERSION: Node.js version. (Derived)');
 
   if (!config.SIMPLENOTE_USERNAME || !config.SIMPLENOTE_PASSWORD) {
-    console.warn('WARNING: Critical Simplenote credentials are effectively missing. validateConfig() should prevent full startup.');
+    console.warn('WARNING: Critical Simplenote credentials (SIMPLENOTE_USERNAME, SIMPLENOTE_PASSWORD) are missing from environment variables. The application will not start.');
   }
 }
 /* eslint-enable no-console */
