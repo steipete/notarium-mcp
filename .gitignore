@@ -54,9 +54,6 @@ web_modules/
 # Optional eslint cache
 .eslintcache
 
-# Optional stylelint cache
-.stylelintcache
-
 # Microbundle cache
 .rpt2_cache/
 .rts2_cache_cjs/
@@ -70,67 +67,73 @@ web_modules/
 *.tgz
 
 # Yarn Integrity file
-.yarn-integrity
+.yarnclean
 
-# dotenv environment variable files
+# dotenv environment variables file
 .env
+.env*.local
 .env.development.local
 .env.test.local
 .env.production.local
-.env.local
-
-# parcel-bundler cache (https://parceljs.org/)
-.cache
-.parcel-cache
-
-# Next.js build output
-.next
-out
-
-# Nuxt.js build / generate output
-.nuxt
-dist
-
-# Gatsby files
-.cache/
-# Comment in the public line in if your project uses Gatsby and not Next.js
-# https://nextjs.org/blog/next-9-1#public-directory-support
-# public
-
-# vuepress build output
-.vuepress/dist
-
-# vuepress v2.x temp and cache directory
-.temp
-.cache
-
-# vitepress build output
-**/.vitepress/dist
-
-# vitepress cache directory
-**/.vitepress/cache
 
 # Docusaurus cache and generated files
 .docusaurus
 
-# Serverless directories
-.serverless/
+# Next.js build files
+.next
+out
 
-# FuseBox cache
-.fusebox/
+# Parcel cache files and generated files
+.cache
+.parcel-cache
 
-# DynamoDB Local files
-.dynamodb/
+# Nuxt.js build files and PWA files
+.nuxt
 
-# TernJS port file
-.tern-port
+# Gatsby cache and generated files
+.cache/
+public
 
-# Stores VSCode versions used for testing VSCode extensions
-.vscode-test
+# Angular build files
+/dist
+/tmp
 
-# yarn v2
-.yarn/cache
-.yarn/unplugged
-.yarn/build-state.yml
-.yarn/install-state.gz
-.pnp.*
+# Svelte build files
+.svelte-kit
+
+# VS Code files
+.vscode/
+
+# Mac OS files
+.DS_Store
+
+# MCP Notarium specific
+dist/
+notarium_cache.sqlite
+notarium_cache.sqlite.encrypted
+notarium_cache.sqlite-shm
+notarium_cache.sqlite-wal
+notarium_cache.sqlite.encrypted-shm
+notarium_cache.sqlite.encrypted-wal
+*.log # General log files, if LOG_FILE_PATH is used
+
+# IDE and Editor files
+.cursor/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build outputs
+dist/
+
+# Test outputs
+test-results/
+
+# Temporary files
+temp/
+tmp/
+
+# Local shell scripts (except the committed ones)
+*.sh
+!start.sh 
