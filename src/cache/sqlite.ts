@@ -2,7 +2,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'module';
 import { type Database as SqlJsDatabase, type SqlJsStatic } from 'sql.js';
 import logger from '../logging.js';
@@ -39,34 +39,68 @@ async function loadSqlJs(): Promise<SqlJsStatic> {
     throw new Error('Missing sql.js assets (glue or wasm)');
   }
 
-  const ownRequire = createRequire(import.meta.url);
-  const relativePathToGlueFromHere = path.relative(__dirname, customSqlJsGluePath);
-  const requirePath = path.isAbsolute(relativePathToGlueFromHere)
-    ? relativePathToGlueFromHere
-    : (relativePathToGlueFromHere.startsWith('.') ? relativePathToGlueFromHere : './' + relativePathToGlueFromHere);
-  
-  logger.debug({ requirePath }, '[SQLite Load] Attempting to require custom SQL.js glue');
-  const loadedModule = ownRequire(requirePath);
   let initSqlJsFunction: any;
 
-  if (typeof loadedModule === 'function') {
-    initSqlJsFunction = loadedModule;
-    logger.debug('[SQLite Load] Found initSqlJs directly from module exports.');
-  } else if (loadedModule && typeof loadedModule.default === 'function') {
-    initSqlJsFunction = loadedModule.default;
-    logger.debug('[SQLite Load] Found initSqlJs from module.exports.default.');
-  // @ts-ignore
-  } else if (typeof global !== 'undefined' && global.Module?.initSqlJs) {
+  // Attempt 1: Dynamic import (ESM)
+  try {
+    const glueFileUrl = pathToFileURL(customSqlJsGluePath).href;
+    logger.debug({ glueFileUrl }, '[SQLite Load] Attempting dynamic import via file URL');
+    const module = await import(glueFileUrl);
+    if (module.default && typeof module.default === 'function') {
+      initSqlJsFunction = module.default;
+      logger.debug('[SQLite Load] Found initSqlJs via dynamic import (default export).');
+    } else if (module.initSqlJs && typeof module.initSqlJs === 'function') {
+      initSqlJsFunction = module.initSqlJs;
+      logger.debug('[SQLite Load] Found initSqlJs via dynamic import (named export initSqlJs).');
+    } else if (typeof module === 'function') { // Less common, if the module itself is the function
+      initSqlJsFunction = module;
+      logger.debug('[SQLite Load] Found initSqlJs via dynamic import (module itself is function).');
+    }
+  } catch (e) {
+    logger.warn({ error: String(e), customSqlJsGluePath }, '[SQLite Load] Dynamic import failed. Falling back to other methods.');
+  }
+
+  // Attempt 2: createRequire (CommonJS-style)
+  if (!initSqlJsFunction) {
+    const ownRequire = createRequire(import.meta.url);
+    const relativePathToGlueFromHere = path.relative(__dirname, customSqlJsGluePath);
+    const requirePath = path.isAbsolute(relativePathToGlueFromHere)
+      ? relativePathToGlueFromHere
+      : (relativePathToGlueFromHere.startsWith('.') ? relativePathToGlueFromHere : './' + relativePathToGlueFromHere);
+    
+    logger.debug({ requirePath }, '[SQLite Load] Attempting to require custom SQL.js glue (CommonJS style)');
+    try { // Wrap require in try-catch as it can fail if module is not CJS
+        const loadedModule = ownRequire(requirePath);
+        if (typeof loadedModule === 'function') {
+          initSqlJsFunction = loadedModule;
+          logger.debug('[SQLite Load] Found initSqlJs directly from CJS module.exports.');
+        } else if (loadedModule && typeof loadedModule.default === 'function') {
+          initSqlJsFunction = loadedModule.default;
+          logger.debug('[SQLite Load] Found initSqlJs from CJS module.exports.default.');
+        }
+    } catch (cjsError) {
+        logger.warn({ error: String(cjsError), requirePath}, "[SQLite Load] CJS require failed.");
+    }
+  }
+  
+  // Attempt 3: Global Module object (often set by UMD builds)
+  if (!initSqlJsFunction) {
     // @ts-ignore
-    initSqlJsFunction = global.Module.initSqlJs;
-    logger.debug('[SQLite Load] Found initSqlJs from global.Module.initSqlJs.');
-  } else {
-    logger.warn({ loadedModuleType: typeof loadedModule, loadedModuleKeys: loadedModule ? Object.keys(loadedModule) : null }, '[SQLite Load] Failed to find initSqlJs in loaded module via direct/default/global. Attempting VM fallback.');
+    if (typeof global !== 'undefined' && global.Module?.initSqlJs) {
+      // @ts-ignore
+      initSqlJsFunction = global.Module.initSqlJs;
+      logger.debug('[SQLite Load] Found initSqlJs from global.Module.initSqlJs.');
+    }
+  }
+
+  // Attempt 4: VM fallback (as was previously successful)
+  if (!initSqlJsFunction) {
+    logger.warn({ loadedModuleType: typeof initSqlJsFunction, path: customSqlJsGluePath }, '[SQLite Load] Failed to find initSqlJs via dynamic import, CJS require, or global. Attempting VM fallback.');
     try {
       const vm = await import('vm');
       const glueSource = fs.readFileSync(customSqlJsGluePath, 'utf8');
       const vmContext = {
-        require: ownRequire,
+        require: createRequire(import.meta.url),
         console, // Provide console for the script if it uses it
         process, // Provide process for the script if it uses it
         __dirname: assetsDir, 
@@ -90,10 +124,10 @@ async function loadSqlJs(): Promise<SqlJsStatic> {
 
     if (!initSqlJsFunction) {
       logger.fatal({
-          loadedModuleType: typeof loadedModule,
-          loadedModuleKeys: loadedModule ? Object.keys(loadedModule) : 'null or undefined',
+          loadedModuleType: typeof initSqlJsFunction,
+          path: customSqlJsGluePath,
         },
-        '[SQLite Load] Still failed to find initSqlJs after all fallbacks.'
+        '[SQLite Load] Still failed to find initSqlJs after all fallbacks (dynamic import, CJS, global, VM).'
       );
       throw new Error('Could not load initSqlJs function from custom-sql-wasm.js after all fallbacks.');
     }
@@ -139,7 +173,7 @@ function generateOwnerIdentityHash(currentConfig: typeof config): string {
   return currentConfig.SIMPLENOTE_USERNAME.replace(/[^a-zA-Z0-9]/g, '_');
 }
 
-function cacheFilePath(): string {
+export function cacheFilePath(): string {
   const cacheDir = path.join(projectRoot, '.cache');
   ensureDir(cacheDir);
   // Use the imported config object directly
@@ -232,21 +266,21 @@ function createSchema(db: SqlJsDatabase): void {
   db.run(`
     CREATE TABLE IF NOT EXISTS notes (
       id   TEXT PRIMARY KEY NOT NULL,
-      txt  TEXT NOT NULL,
+      text  TEXT NOT NULL,
       tags TEXT NOT NULL DEFAULT '[]', -- Stored as JSON string array
-      crt_at INTEGER NOT NULL, -- Unix epoch seconds
-      mod_at INTEGER NOT NULL, -- Unix epoch seconds
-      l_ver INTEGER NOT NULL DEFAULT 1, -- Local version, starts at 1, increments on local change
-      s_ver INTEGER, -- Simperium version (optional, from backend)
+      created_at INTEGER NOT NULL, -- Unix epoch seconds
+      modified_at INTEGER NOT NULL, -- Unix epoch seconds
+      local_version INTEGER NOT NULL DEFAULT 1, -- Local version, starts at 1, increments on local change
+      server_version INTEGER, -- Simperium version (optional, from backend)
       trash INTEGER NOT NULL DEFAULT 0, -- Boolean (0 or 1)
       sync_deleted INTEGER NOT NULL DEFAULT 0 -- Added: To track if delete was confirmed by sync
     );
 
-    CREATE INDEX IF NOT EXISTS idx_notes_mod_at ON notes(mod_at);
+    CREATE INDEX IF NOT EXISTS idx_notes_modified_at ON notes(modified_at);
     CREATE INDEX IF NOT EXISTS idx_notes_trash ON notes(trash);
 
     CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-      txt, tags, -- Columns to be indexed from 'notes' table
+      text, tags, -- Columns to be indexed from 'notes' table
       content='notes', -- Source table for content
       content_rowid='rowid', -- Links FTS table rowid to 'notes' table rowid
       tokenize='porter unicode61 remove_diacritics 1' -- Porter stemmer, Unicode 6.1 support, remove diacritics
@@ -254,14 +288,14 @@ function createSchema(db: SqlJsDatabase): void {
 
     -- Triggers to keep FTS table synchronized with notes table
     CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
-      INSERT INTO notes_fts(rowid, txt, tags) VALUES (new.rowid, new.txt, new.tags);
+      INSERT INTO notes_fts(rowid, text, tags) VALUES (new.rowid, new.text, new.tags);
     END;
     CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
-      INSERT INTO notes_fts(notes_fts, rowid, txt, tags) VALUES ('delete', old.rowid, old.txt, old.tags);
+      INSERT INTO notes_fts(notes_fts, rowid, text, tags) VALUES ('delete', old.rowid, old.text, old.tags);
     END;
     CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
-      INSERT INTO notes_fts(notes_fts, rowid, txt, tags) VALUES ('delete', old.rowid, old.txt, old.tags);
-      INSERT INTO notes_fts(rowid, txt, tags) VALUES (new.rowid, new.txt, new.tags);
+      INSERT INTO notes_fts(notes_fts, rowid, text, tags) VALUES ('delete', old.rowid, old.text, old.tags);
+      INSERT INTO notes_fts(rowid, text, tags) VALUES (new.rowid, new.text, new.tags);
     END;
 
     CREATE TABLE IF NOT EXISTS sync_metadata (
