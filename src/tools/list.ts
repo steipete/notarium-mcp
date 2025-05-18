@@ -177,7 +177,7 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
 
   // 12. Process Rows (Spec 10.1.Server Logic.12)
   const items = rows.map((row) => {
-    let titlePreviewString = (row.text.split('\n')[0] || '').trim().substring(0, 80);
+    let titlePreviewString = (row.text.split('\n')[0] || '').trim();
     if (titlePreviewString.length === 0) {
       titlePreviewString = '(empty note)';
     }

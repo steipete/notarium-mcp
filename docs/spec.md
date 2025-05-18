@@ -229,7 +229,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 *   **`ListItemSchema`**:
     *   `type: z.literal('text')` (Indicates item is plain text)
     *   `uuid: z.string().min(1)` (The unique ID of the note, maps to `notes.id`)
-    *   `text: z.string().min(1).max(80)` (Preview of the note content, first line, max 80 chars. Non-empty.)
+    *   `text: z.string().min(1)` (Full first line of the note content, non-empty. Use `get` tool for more lines.)
     *   `local_version: z.number().int()`
     *   `tags: NoteTagsSchema`
     *   `modified_at: UnixTimestampSchema` (Last modified timestamp (epoch seconds))
@@ -324,7 +324,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
                 *   `ORDER_BY = orderBySQL;` (SQLite FTS returns `rank` implicitly when matching).
         10. **Count Query:** `SELECT COUNT(*) as total FROM notes WHERE ${SQL_WHERE_CLAUSES.join(" AND ") || '1=1'};` (Execute with `SQL_PARAMS` excluding FTS term if no FTS query). Get `total_items`.
         11. **Data Query:** `SELECT notes.id, notes.local_version, notes.text, notes.tags, notes.modified_at, notes.trash FROM notes WHERE ${SQL_WHERE_CLAUSES.join(" AND ") || '1=1'} ORDER BY ${ORDER_BY} LIMIT ? OFFSET ?;`. (Execute with all `SQL_PARAMS`, plus `input.limit`, `(input.page - 1) * input.limit`).
-        12. **Process Rows:** For each row, generate `titlePreviewString` (first non-empty trimmed line of `notes.text`, max 80 chars; `"(empty note)"` if note empty/whitespace). Map to `ListItemSchema` by populating `type` with `'text'`, `uuid` with `notes.id`, and `text` directly with `titlePreviewString`.
+        12. **Process Rows:** For each row, generate `titlePreviewString` (full first non-empty trimmed line of `notes.text`; `"(empty note)"` if note empty/whitespace). Map to `ListItemSchema` by populating `type` with `'text'`, `uuid` with `notes.id`, and `text` directly with `titlePreviewString`.
             *   **Note:** Use `ListItemSchema.safeParse()` to handle potential data inconsistencies. Log and skip invalid items.
     *   **Output**: `ListOutputSchema` (`content: ListItem[]`, `next_page?: number`). Calculate `next_page`.
 *   **10.2. Tool: `get`**
