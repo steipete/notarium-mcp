@@ -1,7 +1,7 @@
 import pino from 'pino';
 import os from 'os';
 
-const logLevel = process.env.LOG_LEVEL || 'debug';
+const logLevel = (process.env.LOG_LEVEL || 'debug').toLowerCase();
 const logFilePath = process.env.LOG_FILE_PATH || "./notarium-debug.log";
 const logFormat = process.env.LOG_FORMAT; // 'json' or 'text' (default via pino-pretty)
 const isTTY = process.stdout.isTTY && process.stderr.isTTY;
