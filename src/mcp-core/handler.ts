@@ -142,7 +142,9 @@ export async function handleMcpRequest(
                 ids: { type: 'array', items: { type: 'string' }, description: 'Optional list of note IDs to filter by' },
                 limit: { type: 'integer', description: 'Maximum number of notes to return' },
                 since: { type: 'number', description: 'Timestamp to filter notes modified since' },
-                tags: { type: 'array', items: { type: 'string' }, description: 'Tags to filter by' }
+                tags: { type: 'array', items: { type: 'string' }, description: 'Tags to filter by' },
+                date_before: { type: 'string', format: 'date', description: 'Filter notes modified before this date (YYYY-MM-DD)' },
+                date_after: { type: 'string', format: 'date', description: 'Filter notes modified after this date (YYYY-MM-DD)' }
               }
             },
             schema: {
@@ -152,8 +154,35 @@ export async function handleMcpRequest(
                   ids: { type: 'array', items: { type: 'string' }, description: 'Optional list of note IDs to filter by' },
                   limit: { type: 'integer', description: 'Maximum number of notes to return' },
                   since: { type: 'number', description: 'Timestamp to filter notes modified since' },
-                  tags: { type: 'array', items: { type: 'string' }, description: 'Tags to filter by' }
+                  tags: { type: 'array', items: { type: 'string' }, description: 'Tags to filter by' },
+                  date_before: { type: 'string', format: 'date', description: 'Filter notes modified before this date (YYYY-MM-DD)' },
+                  date_after: { type: 'string', format: 'date', description: 'Filter notes modified after this date (YYYY-MM-DD)' }
                 }
+              },
+              result: {
+                type: 'object',
+                properties: {
+                  items: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string' },
+                        local_version: { type: 'integer' },
+                        title_prev: { type: 'string' },
+                        tags: { type: 'array', items: { type: 'string' } },
+                        modified_at: { type: 'integer' },
+                        trash: { type: 'boolean' }
+                      },
+                      required: ['id','local_version','title_prev','tags','modified_at','trash']
+                    }
+                  },
+                  total_items: { type: 'integer' },
+                  current_page: { type: 'integer' },
+                  total_pages: { type: 'integer' },
+                  next_page: { type: 'integer' }
+                },
+                required: ['items','total_items','current_page','total_pages']
               }
             }
           },
@@ -166,9 +195,9 @@ export async function handleMcpRequest(
               required: ['id'],
               properties: {
                 id: { type: 'string', description: 'Note ID to retrieve (must be a non-empty string).' },
-                l_ver: { type: 'integer', description: 'Optional: specific local version of the note to retrieve.' },
-                rng_ln_s: { type: 'integer', minimum: 1, description: 'Optional: 1-indexed start line for partial content retrieval.' },
-                rng_ln_c: { type: 'integer', minimum: 0, description: 'Optional: Number of lines to retrieve from start line (0 means to end of note).' }
+                local_version: { type: 'integer', description: 'Optional: specific local version of the note to retrieve.' },
+                range_line_start: { type: 'integer', minimum: 1, description: 'Optional: 1-indexed start line for partial content retrieval.' },
+                range_line_count: { type: 'integer', minimum: 0, description: 'Optional: Number of lines to retrieve from start line (0 means to end of note).' }
               }
             },
             schema: {
@@ -177,9 +206,9 @@ export async function handleMcpRequest(
                 required: ['id'],
                 properties: {
                   id: { type: 'string', description: 'Note ID to retrieve (must be a non-empty string).' },
-                  l_ver: { type: 'integer', description: 'Optional: specific local version of the note to retrieve.' },
-                  rng_ln_s: { type: 'integer', minimum: 1, description: 'Optional: 1-indexed start line for partial content retrieval.' },
-                  rng_ln_c: { type: 'integer', minimum: 0, description: 'Optional: Number of lines to retrieve from start line (0 means to end of note).' }
+                  local_version: { type: 'integer', description: 'Optional: specific local version of the note to retrieve.' },
+                  range_line_start: { type: 'integer', minimum: 1, description: 'Optional: 1-indexed start line for partial content retrieval.' },
+                  range_line_count: { type: 'integer', minimum: 0, description: 'Optional: Number of lines to retrieve from start line (0 means to end of note).' }
                 }
               }
             }
@@ -192,16 +221,33 @@ export async function handleMcpRequest(
               type: 'object',
               properties: {
                 id: { type: 'string', description: 'Optional note ID for updates' },
-                txt: { type: 'string', description: 'Note content' },
+                local_version: { type: 'integer', description: 'Local version, required for updates' },
+                server_version: { type: 'integer', description: 'Server version, for conflict detection' },
+                text: { type: 'string', description: 'Note content' },
+                text_patch: { type: 'array', items: { $ref: '#/definitions/patchOperation' }, description: 'Line-based patch for note content' },
                 tags: { type: 'array', items: { type: 'string' }, description: 'Note tags' }
               }
             },
             schema: {
+              definitions: {
+                patchOperation: {
+                  type: 'object',
+                  required: ['op', 'ln'],
+                  properties: {
+                    op: { type: 'string', enum: ['add', 'mod', 'del'] },
+                    ln: { type: 'integer', minimum: 1 },
+                    val: { type: 'string' }
+                  }
+                }
+              },
               params: {
                 type: 'object',
                 properties: {
                   id: { type: 'string', description: 'Optional note ID for updates' },
-                  txt: { type: 'string', description: 'Note content' },
+                  local_version: { type: 'integer', description: 'Local version, required for updates' },
+                  server_version: { type: 'integer', description: 'Server version, for conflict detection' },
+                  text: { type: 'string', description: 'Note content' },
+                  text_patch: { type: 'array', items: { $ref: '#/definitions/patchOperation' }, description: 'Line-based patch for note content' },
                   tags: { type: 'array', items: { type: 'string' }, description: 'Note tags' }
                 }
               }
