@@ -1,4 +1,4 @@
-import type { Database as DB } from 'better-sqlite3';
+import type { DB } from '../cache/sqlite.js';
 import logger from '../logging.js';
 import { BackendSyncService } from '../sync/sync-service.js';
 import { NotariumError, NotariumValidationError, NotariumInternalError } from '../errors.js';
@@ -10,6 +10,7 @@ import { handleList } from '../tools/list.js';
 import { handleGet } from '../tools/get.js';
 import { handleSave } from '../tools/save.js';
 import { handleManage } from '../tools/manage.js';
+import * as toolImplementations from '../tools/index.js';
 
 // MCP protocol version supported by this server
 const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
@@ -34,7 +35,7 @@ interface McpResponse {
   };
 }
 
-const MCP_SERVICE_NAME = 'mcp_notarium'; // As per spec 10.
+const MCP_SERVICE_NAME = 'mcp_notarium'; // Define the expected service name
 
 // Helper function to call the appropriate method handler
 async function callToolMethod(methodName: string, params: any, db: DB, syncService: BackendSyncService) {
@@ -132,9 +133,9 @@ export async function handleMcpRequest(
       result: {
         tools: [
           {
-            name: 'mcp_notarium.list',
+            name: 'mcp_notarium.list_notes',
             title: 'List notes',
-            description: 'Lists notes from Simplenote',
+            description: 'Lists notes, allowing for filtering by IDs, modification date, and tags. Supports pagination to handle large sets of notes.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -157,9 +158,9 @@ export async function handleMcpRequest(
             }
           },
           {
-            name: 'mcp_notarium.get',
+            name: 'mcp_notarium.get_note',
             title: 'Get note',
-            description: 'Gets a specific note by ID',
+            description: 'Retrieves a specific note by its unique ID. Can also fetch a particular version of the note or a specific range of lines within the note.',
             inputSchema: {
               type: 'object',
               required: ['id'],
@@ -178,9 +179,9 @@ export async function handleMcpRequest(
             }
           },
           {
-            name: 'mcp_notarium.save',
+            name: 'mcp_notarium.save_note',
             title: 'Save note',
-            description: 'Saves a note to Simplenote',
+            description: 'Saves a note. This can be used to create a new note or update an existing one. Supports providing full text content or line-based patches for efficient updates.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -201,9 +202,9 @@ export async function handleMcpRequest(
             }
           },
           {
-            name: 'mcp_notarium.manage',
+            name: 'mcp_notarium.manage_notes',
             title: 'Manage notes',
-            description: 'Trash, untrash, delete notes or manage the server',
+            description: 'Performs various management actions on notes or the server. This includes moving notes to trash, restoring them from trash, permanently deleting notes, retrieving server statistics, or resetting the local cache.',
             inputSchema: {
               type: 'object',
               required: ['act'],
@@ -239,195 +240,75 @@ export async function handleMcpRequest(
   // Map method from tools/call to the corresponding method name
   if (method === 'tools/call') {
     logger.info({ method, params }, 'Received tools/call request');
-    
-    // Check if params has a name property that specifies which tool to call
-    if (params && params.name) {
-      const toolName = params.name;
-      
-      // Map the full tool name to the method part (e.g., mcp_notarium.list -> list)
-      const methodPart = toolName.split('.')[1];
-      
-      if (!methodPart) {
-        return {
-          jsonrpc: '2.0',
-          id,
-          error: {
-            code: -32601,
-            message: `Invalid tool name format: ${toolName}. Expected format: 'mcp_notarium.method'`,
-          },
-        };
-      }
-      
-      // Extract the arguments from the params
-      let paramArgs = params.arguments || {};
-      
-      // Handle the parameters specific to different tools
-      // Specially for 'manage' actions where we need to unwrap the 'act' property from arguments
-      if (methodPart === 'manage' && paramArgs) {
-        // Now we just pass the entire arguments object to the handler
-        try {
-          const result = await callToolMethod(methodPart, paramArgs, db, syncService);
-          return {
-            jsonrpc: '2.0',
-            id,
-            result,
-          };
-        } catch (error) {
-          if (error instanceof NotariumError) {
-            return {
-              jsonrpc: '2.0',
-              id,
-              error: {
-                code: error instanceof NotariumValidationError ? -32602 : -32000,
-                message: error.message,
-                data: { category: error.category, originalError: error },
-              },
-            };
-          }
-          
-          return {
-            jsonrpc: '2.0',
-            id,
-            error: {
-              code: -32000,
-              message: error instanceof Error ? error.message : String(error),
-              data: { originalError: error },
-            },
-          };
-        }
-      }
-      
-      // Handle normal tool calls
+
+    if (!params || typeof params.name !== 'string') {
+      logger.warn('Invalid tools/call: Missing or invalid params.name');
+      return {
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32602, message: 'Invalid method parameters: Missing or invalid tool name (params.name).' },
+      };
+    }
+
+    const toolName = params.name; // e.g., "mcp_notarium.list_notes"
+    const methodParts = toolName.split('.');
+
+    if (methodParts.length < 2 || methodParts[0] !== MCP_SERVICE_NAME) {
+      logger.warn({ toolName, MCP_SERVICE_NAME }, 'Invalid tool name format or service name mismatch');
+      return {
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32602, message: `Invalid method parameters: Invalid tool name format or service mismatch. Expected prefix ${MCP_SERVICE_NAME}.` }
+      };
+    }
+
+    const actualMethodNameFromMcp = methodParts[1]; // This will be "list_notes"
+    const toolImplementation = (toolImplementations as any)[actualMethodNameFromMcp];
+
+    if (typeof toolImplementation === 'function') {
       try {
-        const result = await callToolMethod(methodPart, paramArgs, db, syncService);
+        logger.info({ toolName: actualMethodNameFromMcp, params: params.arguments }, 'Dispatching to tool');
+        // Pass params.arguments as the arguments to the actual tool function
+        // Different tools have different signatures, handle accordingly
+        let result;
+        if (actualMethodNameFromMcp === 'manage_notes') {
+          result = await toolImplementation(params.arguments || {}, db, syncService, config);
+        } else {
+          result = await toolImplementation(params.arguments || {}, db);
+        } 
+        logger.info({ 
+          toolName: actualMethodNameFromMcp, 
+          responseId: id,
+          hasResult: !!result
+        }, 'Sending tools/call response');
         return {
           jsonrpc: '2.0',
           id,
           result,
         };
-      } catch (error) {
-        if (error instanceof NotariumError) {
-          return {
-            jsonrpc: '2.0',
-            id,
-            error: {
-              code: error instanceof NotariumValidationError ? -32602 : -32000,
-              message: error.message,
-              data: { category: error.category, originalError: error },
-            },
-          };
-        }
-        
+      } catch (error: any) {
+        logger.error({ err: error, toolName: actualMethodNameFromMcp }, 'Error executing tool');
         return {
           jsonrpc: '2.0',
           id,
-          error: {
-            code: -32000,
-            message: error instanceof Error ? error.message : String(error),
-            data: { originalError: error },
-          },
+          error: { code: -32000, message: `Server error: ${error.message || 'Unknown error during tool execution'}` },
         };
       }
-    }
-    
-    return {
-      jsonrpc: '2.0',
-      id,
-      error: {
-        code: -32602,
-        message: 'Invalid params: Missing "name" property in tools/call request',
-      },
-    };
-  }
-
-  // Handle service specific methods (old style with dot notation)
-  if (!method.startsWith(MCP_SERVICE_NAME + '.')) {
-    return {
-      jsonrpc: '2.0',
-      id,
-      error: {
-        code: -32601, // Method not found
-        message: `Method not found. Service should be '${MCP_SERVICE_NAME}'.`,
-      },
-    };
-  }
-
-  const toolName = method.substring(MCP_SERVICE_NAME.length + 1);
-
-  try {
-    let result: any;
-
-    switch (toolName) {
-      case 'list': {
-        const listParams = ListInputSchema.parse(params);
-        result = await handleList(listParams, db);
-        break;
-      }
-      case 'get': {
-        const getParams = GetInputSchema.parse(params);
-        result = await handleGet(getParams, db);
-        break;
-      }
-      case 'save': {
-        const saveParams = SaveInputSchema.parse(params);
-        result = await handleSave(saveParams, db);
-        break;
-      }
-      case 'manage': {
-        const manageParams = ManageInputSchema.parse(params);
-        result = await handleManage(manageParams, db, syncService, config);
-        break;
-      }
-      default:
-        return {
-          jsonrpc: '2.0',
-          id,
-          error: {
-            code: -32601,
-            message: `Tool '${toolName}' not found within ${MCP_SERVICE_NAME}.`,
-          },
-        };
-    }
-    return { jsonrpc: '2.0', id, result };
-  } catch (error) {
-    logger.error({ err: error, method, params }, 'Error in MCP request handler');
-
-    // Convert various error types to appropriate JSON-RPC error responses
-    if (error instanceof NotariumValidationError) {
-      return {
-        jsonrpc: '2.0',
-        id: id || 0, // Ensure id is never null (use 0 as fallback)
-        error: {
-          code: -32602, // Invalid params
-          message: error.message,
-          data: { category: error.category, details: error.toString() },
-        },
-      };
-    } else if (error instanceof NotariumError) {
-      return {
-        jsonrpc: '2.0',
-        id: id || 0, // Ensure id is never null (use 0 as fallback)
-        error: {
-          code: -32000, // Server error (application defined)
-          message: error.message,
-          data: { category: error.category, details: error.toString() },
-        },
-      };
     } else {
-      // Generic error handling for unexpected errors
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logger.error({ error }, `Unhandled error during MCP request: ${errorMessage}`);
-      
+      logger.warn({ toolName, actualMethodNameFromMcp, available: Object.keys(toolImplementations) }, 'Method not found in toolImplementations');
       return {
         jsonrpc: '2.0',
-        id: id || 0, // Ensure id is never null (use 0 as fallback)
-        error: {
-          code: -32603, // Internal JSON-RPC error
-          message: 'Internal server error',
-          data: { message: errorMessage },
-        },
+        id,
+        error: { code: -32601, message: `Method not found: ${toolName}. Could not map to a valid internal method. Available methods: ${Object.keys(toolImplementations).join(', ')}` },
       };
     }
+  } else {
+    logger.warn({ method }, 'Unsupported method');
+    return {
+      jsonrpc: '2.0',
+      id,
+      error: { code: -32601, message: `Method not found: ${method}` },
+    };
   }
 }
 
