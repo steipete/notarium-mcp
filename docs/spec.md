@@ -2,7 +2,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 
 ## Technical Specification: MCP Notarium (Definitive Implementation Blueprint)
 
-**Version:** 4.2 (Incorporates all recent refactoring)
+**Version:** 4.3 (Reflects uuid -> id rename in ListItemSchema)
 **Date:** May 18, 2025
 
 **Table of Contents:**
@@ -219,7 +219,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 
 *   **`ListItemSchema`**:
     *   `type: z.literal('text')`
-    *   `uuid: z.string().min(1)`
+    *   `id: z.string().min(1)`
     *   `text: z.string().min(1)` (Preview text: `list_notes` uses `preview_lines` (default 3), `get_notes`/`save_notes` use up to 100 lines, `manage_notes` uses short JSON string.)
     *   `local_version: z.number().int()`
     *   `tags: NoteTagsSchema`
@@ -320,11 +320,11 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
         *   Preview text in output `ListItemSchema.text` defaults to 100 lines.
         *   Includes `number_of_lines` (total lines of original note) in each successfully saved output `ListItemSchema`.
     *   **Output**: `SaveNotesOutputSchema` (List-style wrapper containing successfully saved notes).
-*   **10.4. Tool: `manage_notes`**
+*   **10.5. Tool: `manage_notes`**
     *   **Input**: `ManageInputSchema`.
     *   **Server Logic (Detailed Summary):**
         *   `get_stats`: `db_encryption` field removed from stats.
-        *   All actions now return their results wrapped in the standard list-style output format (one item in `content`, where `text` is a short (max 200 char) JSON preview of the actual action result, and `number_of_lines` is 1).
+        *   All actions now return their results wrapped in the standard list-style output format (one item in `content`, where `text` is a short (max 200 char) JSON preview of the actual action result, `id` is typically `"manage_result"` or the note ID if applicable, and `number_of_lines` is 1).
     *   **Output**: List-style wrapper (see `GetNotesOutputSchema` for general structure, content varies by action).
 
 **11. NPM Dependencies & Project Setup**
