@@ -165,7 +165,10 @@ export async function handleMcpRequest(
               type: 'object',
               required: ['id'],
               properties: {
-                id: { type: 'string', description: 'Note ID to retrieve' }
+                id: { type: 'string', description: 'Note ID to retrieve (must be a non-empty string).' },
+                l_ver: { type: 'integer', description: 'Optional: specific local version of the note to retrieve.' },
+                rng_ln_s: { type: 'integer', minimum: 1, description: 'Optional: 1-indexed start line for partial content retrieval.' },
+                rng_ln_c: { type: 'integer', minimum: 0, description: 'Optional: Number of lines to retrieve from start line (0 means to end of note).' }
               }
             },
             schema: {
@@ -173,7 +176,10 @@ export async function handleMcpRequest(
                 type: 'object',
                 required: ['id'],
                 properties: {
-                  id: { type: 'string', description: 'Note ID to retrieve' }
+                  id: { type: 'string', description: 'Note ID to retrieve (must be a non-empty string).' },
+                  l_ver: { type: 'integer', description: 'Optional: specific local version of the note to retrieve.' },
+                  rng_ln_s: { type: 'integer', minimum: 1, description: 'Optional: 1-indexed start line for partial content retrieval.' },
+                  rng_ln_c: { type: 'integer', minimum: 0, description: 'Optional: Number of lines to retrieve from start line (0 means to end of note).' }
                 }
               }
             }
