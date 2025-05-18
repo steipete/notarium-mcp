@@ -10,7 +10,7 @@ import { NotariumDbError } from '../errors.js';
 export async function handleList(params: ListInput, db: DB): Promise<ListOutput> {
   logger.debug({ params }, 'Handling list tool request');
 
-  const { query, tags, limit = 20, page = 1, trash_status = 0, date_before, date_after, sort_by, sort_order } =
+  const { query, tags, limit = 20, page = 1, trash_status = 0, date_before, date_after, sort_by, sort_order, preview_lines = 1 } =
     params;
 
   const sqlWhereClauses: string[] = [];
@@ -115,7 +115,9 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
 
   if (remaining_query_text) {
     // For FTS queries, rank is primary. User-defined sort is secondary.
-    orderBySQL = `rank, ${resolvedSortField} ${resolvedSortOrder}`;
+    // Ensure correct table alias for sort fields if notes table is aliased as 'n' in FTS path.
+    const cteSortField = resolvedSortField.replace(/^notes\./, 'n.');
+    orderBySQL = `ranked.rank, ${cteSortField} ${resolvedSortOrder}`;
   } else {
     // For non-FTS queries, user-defined sort is primary.
     orderBySQL = `${resolvedSortField} ${resolvedSortOrder}`;
@@ -158,13 +160,16 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
     // The FTS condition notes.rowid IN (...) needs to be removed from sqlWhereClauses for this CTE approach.
     
     const nonFtsWhereClauses = sqlWhereClauses.filter(clause => !clause.startsWith('notes.rowid IN (SELECT rowid FROM notes_fts'));
-    const nonFtsWhereClauseString = nonFtsWhereClauses.length > 0 ? nonFtsWhereClauses.join(' AND ') : '1=1';
+    // When using 'n' as alias for notes table, update column references in these clauses
+    const updatedNonFtsWhereClauses = nonFtsWhereClauses.map(clause => clause.replace(/notes\./g, 'n.'));
+    const nonFtsWhereClauseString = updatedNonFtsWhereClauses.length > 0 ? updatedNonFtsWhereClauses.join(' AND ') : '1=1';
     
     // Params for non-FTS clauses (all except the last one, which is ftsQuery)
     const nonFtsParams = sqlParams.slice(0, -1);
     const ftsQueryParam = sqlParams[sqlParams.length - 1]; // This is the ftsQuery
 
-    orderBySQL = `ranked.rank, ${resolvedSortField} ${resolvedSortOrder}`; // Order by rank from CTE
+    const cteSortField2 = resolvedSortField.replace(/^notes\./, 'n.');
+    orderBySQL = `ranked.rank, ${cteSortField2} ${resolvedSortOrder}`; // Order by rank from CTE
 
     dataSql = `WITH ranked_notes AS (
                  SELECT rowid, rank
@@ -212,7 +217,9 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
 
   // 12. Process Rows (Spec 10.1.Server Logic.12)
   const items = rows.map((row) => {
-    let titlePreviewString = (row.text.split('\n')[0] || '').trim();
+    const linesArr = row.text.split('\n');
+    const previewLinesCount = Math.min(preview_lines, linesArr.length);
+    let titlePreviewString = linesArr.slice(0, previewLinesCount).join('\n').trim();
     if (titlePreviewString.length === 0) {
       titlePreviewString = '(empty note)';
     }

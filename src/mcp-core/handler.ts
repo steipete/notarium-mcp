@@ -151,7 +151,8 @@ export async function handleMcpRequest(
                 sort_by: { type: 'string', enum: ['modified_at', 'created_at'], description: 'Field to sort by.' },
                 sort_order: { type: 'string', enum: ['ASC', 'DESC'], description: 'Sort order.' },
                 limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum number of notes to return.' },
-                page: { type: 'integer', minimum: 1, description: 'Page number for pagination.' }
+                page: { type: 'integer', minimum: 1, description: 'Page number for pagination.' },
+                preview_lines: { type: 'integer', minimum: 1, maximum: 20, description: 'Number of leading lines to include in preview text (default 1, max 20).' }
               }
             },
             schema: {
@@ -166,7 +167,8 @@ export async function handleMcpRequest(
                   sort_by: { type: 'string', enum: ['modified_at', 'created_at'], description: 'Field to sort by. Default: modified_at.' },
                   sort_order: { type: 'string', enum: ['ASC', 'DESC'], description: 'Sort order. Default: DESC.' },
                   limit: { type: 'integer', minimum: 1, maximum: 100, default: 20, description: 'Maximum number of notes to return.' },
-                  page: { type: 'integer', minimum: 1, default: 1, description: 'Page number for pagination.' }
+                  page: { type: 'integer', minimum: 1, default: 1, description: 'Page number for pagination.' },
+                  preview_lines: { type: 'integer', minimum: 1, maximum: 20, default: 1, description: 'Number of leading lines to include in preview text.' }
                 }
               },
               result: {
@@ -221,6 +223,11 @@ export async function handleMcpRequest(
                   range_line_start: { type: 'integer', minimum: 1, description: 'Optional: 1-indexed start line for partial content retrieval.' },
                   range_line_count: { type: 'integer', minimum: 0, description: 'Optional: Number of lines to retrieve from start line (0 means to end of note).' }
                 }
+              },
+              result: {
+                type: 'object',
+                description: 'Full note data. Open schema to avoid client-side mis-validation.',
+                additionalProperties: true
               }
             }
           },
@@ -294,6 +301,11 @@ export async function handleMcpRequest(
                   id: { type: 'string', description: 'Note ID for note actions' },
                   local_version: { type: 'integer', description: 'Local version, required for note actions' }
                 }
+              },
+              result: {
+                type: 'object',
+                description: 'Result object varies by action (stats, reset_cache, or note action). Schema kept open so clients accept any of the variants.',
+                additionalProperties: true
               }
             }
           }

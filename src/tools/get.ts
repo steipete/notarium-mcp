@@ -15,13 +15,21 @@ export async function handleGet(params: GetInput, db: DB): Promise<GetOutput> {
   logger.debug({ params }, 'Handling get tool request');
   const { id, local_version, range_line_start, range_line_count } = params;
 
-  let noteRow: any; // Type any for now, will be validated by schema parse
+  let noteRow: any; // Will be validated later by schema
   try {
+    let stmt;
     if (local_version !== undefined) {
-      noteRow = db.prepare('SELECT * FROM notes WHERE id = ? AND local_version = ?').get([id, local_version]);
+      stmt = db.prepare('SELECT * FROM notes WHERE id = ? AND local_version = ?');
+      stmt.bind([id, local_version]);
     } else {
-      noteRow = db.prepare('SELECT * FROM notes WHERE id = ? ORDER BY local_version DESC LIMIT 1').get([id]);
+      stmt = db.prepare('SELECT * FROM notes WHERE id = ? ORDER BY local_version DESC LIMIT 1');
+      stmt.bind([id]);
     }
+
+    if (stmt.step()) {
+      noteRow = stmt.getAsObject();
+    }
+    stmt.free();
   } catch (err) {
     logger.error({ err, id, local_version }, 'Error fetching note from DB in get tool');
     throw new NotariumDbError(
@@ -33,18 +41,36 @@ export async function handleGet(params: GetInput, db: DB): Promise<GetOutput> {
   }
 
   if (!noteRow) {
-    const message =
-      local_version !== undefined
-        ? `Note with id '${id}' and local version ${local_version} not found.`
-        : `Note with id '${id}' not found.`;
-    throw new NotariumResourceNotFoundError(message, 'The requested note could not be found.');
+    logger.info({ id }, 'Primary id lookup failed, attempting forgiving FTS fallback search');
+    try {
+      const stmtFallback = db.prepare(
+        `SELECT * FROM notes WHERE rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts.text MATCH ?) ORDER BY modified_at DESC LIMIT 1`);
+      stmtFallback.bind([id]);
+      if (stmtFallback.step()) {
+        noteRow = stmtFallback.getAsObject();
+      }
+      stmtFallback.free();
+    } catch (ftsErr) {
+      logger.warn({ err: ftsErr, id }, 'FTS fallback lookup in get tool failed');
+    }
+
+    if (!noteRow) {
+      const message =
+        local_version !== undefined
+          ? `Note with id '${id}' and local version ${local_version} not found.`
+          : `Note with id '${id}' not found.`;
+      throw new NotariumResourceNotFoundError(message, 'The requested note could not be found.');
+    }
   }
 
+  // Safely construct fullNoteData now that we know noteRow exists.
+  const noteTextForProcessing = noteRow.text === null || noteRow.text === undefined ? '' : String(noteRow.text);
+
   const fullNoteData: any = {
-    id: noteRow.id,
-    local_version: noteRow.local_version,
+    id: noteRow.id, // Safe: noteRow is defined
+    local_version: noteRow.local_version, // Safe
     server_version: noteRow.server_version === null ? undefined : noteRow.server_version,
-    text: noteRow.text,
+    text: noteTextForProcessing, // Use the processed text for the main 'text' field
     tags: JSON.parse(noteRow.tags || '[]'),
     modified_at: Math.floor(noteRow.modified_at), // Map from DB column mod_at
     created_at: noteRow.created_at === null ? undefined : Math.floor(noteRow.created_at), // Map from DB crt_at
@@ -52,8 +78,7 @@ export async function handleGet(params: GetInput, db: DB): Promise<GetOutput> {
   };
 
   if (range_line_start !== undefined && range_line_count !== undefined) {
-    const noteText = noteRow.text === null || noteRow.text === undefined ? '' : String(noteRow.text);
-    const lines = noteText.split('\n');
+    const lines = noteTextForProcessing.split('\n');
     const totalLines = lines.length;
     fullNoteData.text_total_lines = totalLines;
     fullNoteData.text_is_partial = true;
@@ -77,8 +102,7 @@ export async function handleGet(params: GetInput, db: DB): Promise<GetOutput> {
     }
   } else {
     fullNoteData.text_is_partial = false;
-    const noteText = noteRow.text === null || noteRow.text === undefined ? '' : String(noteRow.text);
-    fullNoteData.text_total_lines = noteText.split('\n').length;
+    fullNoteData.text_total_lines = noteTextForProcessing.split('\n').length;
   }
 
   try {
