@@ -2,7 +2,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 
 ## Technical Specification: MCP Notarium (Definitive Implementation Blueprint)
 
-**Version:** 4.3 (Reflects uuid -> id rename in ListItemSchema)
+**Version:** 4.4 (Clarify Markdown in text fields)
 **Date:** May 18, 2025
 
 **Table of Contents:**
@@ -219,8 +219,8 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 
 *   **`ListItemSchema`**:
     *   `type: z.literal('text')`
-    *   `id: z.string().min(1)`
-    *   `text: z.string().min(1)` (Preview text: `list_notes` uses `preview_lines` (default 3), `get_notes`/`save_notes` use up to 100 lines, `manage_notes` uses short JSON string.)
+    *   `id: z.string().min(1)` (Note ID)
+    *   `text: z.string().min(1)` (Preview text, potentially Markdown. `list_notes` uses `preview_lines` (default 3), `get_notes`/`save_notes` use up to 100 lines, `manage_notes` uses short JSON string.)
     *   `local_version: z.number().int()`
     *   `tags: NoteTagsSchema`
     *   `modified_at: UnixTimestampSchema`
@@ -243,7 +243,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
     *   `id: z.string().min(1).optional()` (Default: new note created)
     *   `local_version: z.number().int().optional()` (Required if `id` is present)
     *   `server_version: z.number().int().optional()` (Optional. Default: not used for new notes, latest for updates if omitted)
-    *   `text: z.string().optional()` (Required if `text_patch` not used)
+    *   `text: z.string().optional()` (Full note content, can be Markdown. Required if `text_patch` not used)
     *   `text_patch: z.array(PatchOperationSchema).optional()` (Required if `text` not used)
     *   `tags: NoteTagsSchema.optional()` (Optional. Default: empty for new notes, existing preserved for updates if omitted)
     *   `trash: z.boolean().optional()` (Optional. Default: false)

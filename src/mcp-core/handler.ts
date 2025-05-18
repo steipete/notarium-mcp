@@ -139,7 +139,7 @@ export async function handleMcpRequest(
           {
             name: 'list_notes',
             title: 'List notes',
-            description: 'Lists notes, allowing for filtering by text query, tags, modification date, and trash status. Supports pagination and sorting. Each returned note item includes a number_of_lines field indicating its total line count.',
+            description: 'Lists notes, allowing for filtering by text query, tags, modification date, and trash status. Supports pagination and sorting. Each returned note item includes a number_of_lines field indicating its total line count. Note text content can be Markdown.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -159,7 +159,7 @@ export async function handleMcpRequest(
           {
             name: 'get_notes',
             title: 'Get Note(s)',
-            description: 'Retrieves a specific note by its unique ID. Can also fetch a particular version of the note or a specific range of lines within the note.',
+            description: 'Retrieves one or more notes by their unique ID(s). Can also fetch a particular version or a specific range of lines if a single ID is provided. Note text content can be Markdown.',
             inputSchema: {
               type: 'object',
               required: ['id'],
@@ -174,7 +174,7 @@ export async function handleMcpRequest(
           {
             name: 'save_notes',
             title: 'Save Note(s)',
-            description: 'Saves one or more notes. Can be used to create new notes or update existing ones. Supports providing full text content or line-based patches for efficient updates. Returns a list of successfully saved notes.',
+            description: 'Saves one or more notes. Can be used to create new notes or update an existing one. Supports providing full text content (Markdown is common) or line-based patches for efficient updates. Returns a list of successfully saved notes.',
             inputSchema: {
               type: 'object',
               required: ['notes'],
