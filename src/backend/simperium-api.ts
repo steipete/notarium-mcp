@@ -183,6 +183,10 @@ function initializeApiClient(token: string): void {
           if (originalRequest.headers) {
             originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
           }
+          // Ensure future requests use the fresh token
+          if (apiClient && apiClient.defaults && apiClient.defaults.headers) {
+            (apiClient.defaults.headers as any)['Authorization'] = `Bearer ${newToken}`;
+          }
           return apiClient(originalRequest);
         } catch (authError) {
           logger.error({ err: authError }, 'Re-authentication failed after 401.');
@@ -357,10 +361,8 @@ export async function getIndex(params: GetIndexParams): Promise<SimperiumIndexRe
       queryParams.limit = params.limit.toString();
     }
     if (params.data !== undefined) {
-      // Simperium typically expects '0' or '1' or true/false strings for boolean type query params
-      // Axios should handle boolean to string conversion, but being explicit can be safer.
-      // For now, passing boolean directly. If issues arise, convert to '0'/'1'.
-      queryParams.data = params.data;
+      // Simperium expects '0' or '1' (stringified ints) for boolean query params
+      queryParams.data = params.data ? '1' : '0';
     }
     if (params.mark) {
       queryParams.mark = params.mark;
@@ -532,12 +534,18 @@ export async function saveNote(
       );
       // Fallback or throw, depending on strictness. For now, attempt to use provided baseVersion or assume 0 if new.
     }
-    const newServerVersion =
-      typeof responseVersionHeader === 'string'
-        ? parseInt(responseVersionHeader, 10)
-        : baseVersion !== undefined
-          ? baseVersion + 1
-          : 0; // Best guess if header is missing
+
+    let newServerVersion: number;
+    if (Array.isArray(responseVersionHeader)) {
+      // Axios may return an array if multiple headers of same name are present
+      newServerVersion = parseInt(responseVersionHeader[0], 10);
+    } else if (typeof responseVersionHeader === 'string') {
+      newServerVersion = parseInt(responseVersionHeader, 10);
+    } else if (baseVersion !== undefined) {
+      newServerVersion = baseVersion + 1; // Fallback
+    } else {
+      newServerVersion = 0; // Creation fallback
+    }
 
     if (isNaN(newServerVersion)) {
       throw new NotariumBackendError(
