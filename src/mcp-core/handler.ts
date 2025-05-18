@@ -152,52 +152,9 @@ export async function handleMcpRequest(
                 sort_order: { type: 'string', enum: ['ASC', 'DESC'], description: 'Sort order.' },
                 limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum number of notes to return.' },
                 page: { type: 'integer', minimum: 1, description: 'Page number for pagination.' },
-                preview_lines: { type: 'integer', minimum: 1, maximum: 20, description: 'Number of leading lines to include in preview text (default 1, max 20).' }
+                preview_lines: { type: 'integer', minimum: 1, maximum: 20, description: 'Number of leading lines to include in preview text (default 3, max 20).' }
               }
             },
-            schema: {
-              params: {
-                type: 'object',
-                properties: {
-                  query: { type: 'string', description: 'Full-text search query. Can include filters like tag:yourtag, before:YYYY-MM-DD, after:YYYY-MM-DD.' },
-                  tags: { type: 'array', items: { type: 'string' }, description: 'Filter by notes containing ALL of these tags.' },
-                  trash_status: { type: 'integer', enum: [0, 1, 2], description: 'Filter by trash status (0: active, 1: trashed, 2: any). Default: 0.' },
-                  date_before: { type: 'string', format: 'date', description: 'Filter for notes modified before this UTC date (YYYY-MM-DD).' },
-                  date_after: { type: 'string', format: 'date', description: 'Filter for notes modified after this UTC date (YYYY-MM-DD).' },
-                  sort_by: { type: 'string', enum: ['modified_at', 'created_at'], description: 'Field to sort by. Default: modified_at.' },
-                  sort_order: { type: 'string', enum: ['ASC', 'DESC'], description: 'Sort order. Default: DESC.' },
-                  limit: { type: 'integer', minimum: 1, maximum: 100, default: 20, description: 'Maximum number of notes to return.' },
-                  page: { type: 'integer', minimum: 1, default: 1, description: 'Page number for pagination.' },
-                  preview_lines: { type: 'integer', minimum: 1, maximum: 20, default: 1, description: 'Number of leading lines to include in preview text.' }
-                }
-              },
-              result: {
-                type: 'object',
-                properties: {
-                  content: {
-                    type: 'array',
-                    items: {
-                      type: 'object',
-                      properties: {
-                        type: { type: 'string', enum: ['text'] },
-                        uuid: { type: 'string' },
-                        text: { type: 'string' },
-                        local_version: { type: 'integer' },
-                        tags: { type: 'array', items: { type: 'string' } },
-                        modified_at: { type: 'integer' },
-                        trash: { type: 'boolean' }
-                      },
-                      required: ['type','uuid','text','local_version','tags','modified_at','trash']
-                    }
-                  },
-                  total_items: { type: 'integer' },
-                  current_page: { type: 'integer' },
-                  total_pages: { type: 'integer' },
-                  next_page: { type: 'integer' }
-                },
-                required: ['content','total_items','current_page','total_pages']
-              }
-            }
           },
           {
             name: 'get_note',
@@ -213,23 +170,6 @@ export async function handleMcpRequest(
                 range_line_count: { type: 'integer', minimum: 0, description: 'Optional: Number of lines to retrieve from start line (0 means to end of note).' }
               }
             },
-            schema: {
-              params: {
-                type: 'object',
-                required: ['id'],
-                properties: {
-                  id: { type: 'string', description: 'Note ID to retrieve (must be a non-empty string).' },
-                  local_version: { type: 'integer', description: 'Optional: specific local version of the note to retrieve.' },
-                  range_line_start: { type: 'integer', minimum: 1, description: 'Optional: 1-indexed start line for partial content retrieval.' },
-                  range_line_count: { type: 'integer', minimum: 0, description: 'Optional: Number of lines to retrieve from start line (0 means to end of note).' }
-                }
-              },
-              result: {
-                type: 'object',
-                description: 'Full note data. Open schema to avoid client-side mis-validation.',
-                additionalProperties: true
-              }
-            }
           },
           {
             name: 'save_note',
@@ -246,30 +186,6 @@ export async function handleMcpRequest(
                 tags: { type: 'array', items: { type: 'string' }, description: 'Note tags' }
               }
             },
-            schema: {
-              definitions: {
-                patchOperation: {
-                  type: 'object',
-                  required: ['operation', 'line_number'],
-                  properties: {
-                    operation: { type: 'string', enum: ['addition', 'modification', 'deletion'] },
-                    line_number: { type: 'integer', minimum: 1 },
-                    value: { type: 'string' }
-                  }
-                }
-              },
-              params: {
-                type: 'object',
-                properties: {
-                  id: { type: 'string', description: 'Optional note ID for updates' },
-                  local_version: { type: 'integer', description: 'Local version, required for updates' },
-                  server_version: { type: 'integer', description: 'Server version, for conflict detection' },
-                  text: { type: 'string', description: 'Note content' },
-                  text_patch: { type: 'array', items: { $ref: '#/definitions/patchOperation' }, description: 'Line-based patch for note content' },
-                  tags: { type: 'array', items: { type: 'string' }, description: 'Note tags' }
-                }
-              }
-            }
           },
           {
             name: 'manage_notes',
@@ -288,26 +204,6 @@ export async function handleMcpRequest(
                 local_version: { type: 'integer', description: 'Local version, required for note actions' }
               }
             },
-            schema: {
-              params: {
-                type: 'object',
-                required: ['action'],
-                properties: {
-                  action: { 
-                    type: 'string', 
-                    enum: ['trash', 'untrash', 'delete_permanently', 'get_stats', 'reset_cache'],
-                    description: 'Action to perform'
-                  },
-                  id: { type: 'string', description: 'Note ID for note actions' },
-                  local_version: { type: 'integer', description: 'Local version, required for note actions' }
-                }
-              },
-              result: {
-                type: 'object',
-                description: 'Result object varies by action (stats, reset_cache, or note action). Schema kept open so clients accept any of the variants.',
-                additionalProperties: true
-              }
-            }
           }
         ]
       }
