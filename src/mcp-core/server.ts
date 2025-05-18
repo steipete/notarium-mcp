@@ -26,7 +26,7 @@ export async function startMcpServer(db: DB, syncService: BackendSyncService): P
         const errorResponse = {
           jsonrpc: '2.0',
           error: { code: -32600, message: 'Invalid Request' },
-          id: request.id !== undefined ? request.id : null,
+          id: request.id !== undefined ? request.id : 0, // Use 0 instead of null
         };
         process.stdout.write(JSON.stringify(errorResponse) + '\n');
         return;
@@ -53,7 +53,7 @@ export async function startMcpServer(db: DB, syncService: BackendSyncService): P
       const errorResponse = {
         jsonrpc: '2.0',
         error: { code: -32700, message: 'Parse error' }, // Or -32603 for Internal error if parse was ok but handler failed generically
-        id: errorId,
+        id: errorId || 0, // Always provide a value, never null
       };
       process.stdout.write(JSON.stringify(errorResponse) + '\n');
     }
