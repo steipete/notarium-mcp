@@ -43,6 +43,26 @@ function deleteDatabaseFilesInternal(dbFilePath: string): void {
 
 const SIMPERIUM_NOTE_BUCKET = 'note'; // Add bucket name
 
+function wrapResultForUi(result: any): any {
+  const preview = typeof result === 'string' ? result : JSON.stringify(result, null, 0);
+  return {
+    content: [
+      {
+        type: 'text',
+        uuid: result.id ? String(result.id) : 'manage_result',
+        text: preview.slice(0, 200),
+        local_version: 0,
+        tags: [],
+        modified_at: Math.floor(Date.now() / 1000),
+        trash: false,
+      },
+    ],
+    total_items: 1,
+    current_page: 1,
+    total_pages: 1,
+  };
+}
+
 /**
  * Handles the 'manage' tool invocation.
  * As per Spec 10.4.
@@ -113,7 +133,7 @@ export async function handleManage(
           db_schema_version: db_schema_version_val,
           backend_cursor: backendCursorRow || null,
         };
-        return ManageGetStatsOutputSchema.parse(stats);
+        return wrapResultForUi(ManageGetStatsOutputSchema.parse(stats));
       } catch (err) {
         logger.error({ err }, 'Error gathering server stats for manage tool');
         throw new NotariumInternalError(
@@ -142,11 +162,11 @@ export async function handleManage(
 
         // Note: The application will likely need to re-initialize the cache (which creates a new DB)
         // on the next operation or restart. This handler doesn't restart the DB itself.
-        return ManageResetCacheOutputSchema.parse({
+        return wrapResultForUi(ManageResetCacheOutputSchema.parse({
           status: 'success',
           message: 'Local cache has been reset. A full resynchronization will occur.',
           full_resync_triggered: true,
-        });
+        }));
       } catch (err) {
         logger.error({ err }, 'Error resetting local cache');
         throw new NotariumInternalError(
@@ -214,12 +234,12 @@ export async function handleManage(
         logger.info(
           `Note ${noteIdToToggleTrash} '${params.action}' processed. New server_version: ${newServerVersionToggle}, new local_version: ${newLocalVersionToggle}`,
         );
-        return ManageNoteActionOutputSchema.parse({
+        return wrapResultForUi(ManageNoteActionOutputSchema.parse({
           id: noteIdToToggleTrash,
           status: params.action === 'trash' ? 'trashed' : 'untrashed',
           new_local_version: newLocalVersionToggle,
           new_server_version: newServerVersionToggle,
-        });
+        }));
       } catch (error) {
         // Error handling similar to handleSave, specific to this action
         logger.error(
@@ -279,11 +299,11 @@ export async function handleManage(
         stmtDelFts.free();
         
         logger.info(`Note ${noteIdToDelete} deleted permanently from local cache.`);
-        return ManageNoteActionOutputSchema.parse({
+        return wrapResultForUi(ManageNoteActionOutputSchema.parse({
           id: noteIdToDelete,
           status: 'deleted',
           // No new_local_version or new_server_version as it's gone locally
-        });
+        }));
       } catch (dbErr) {
         logger.error({ err: dbErr, id: noteIdToDelete }, 'DB error during permanent delete.');
         throw new NotariumDbError(
