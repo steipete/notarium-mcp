@@ -15,7 +15,7 @@ export const NoteTagSchema = z.string().min(1, 'Tag cannot be empty').max(100, '
 export const NoteTagsSchema = z.array(NoteTagSchema).max(100, 'Too many tags'); // Max 100 tags per note as a guess
 
 export const ListItemSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().min(1),
   l_ver: z.number().int(), // Local cache version of the note
   title_prev: z.string().max(80),
   tags: NoteTagsSchema,
@@ -25,7 +25,7 @@ export const ListItemSchema = z.object({
 export type ListItem = z.infer<typeof ListItemSchema>;
 
 export const NoteDataSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().min(1),
   l_ver: z.number().int(), // Local cache version of the note
   s_ver: z.number().int().optional(), // Server version of the note (from Simperium)
   txt: z.string(),
@@ -78,7 +78,7 @@ export type ListOutput = z.infer<typeof ListOutputSchema>;
 // --- Tool: get ---
 // Spec 10.2. Tool `get`
 export const GetInputSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().min(1),
   l_ver: z.number().int().optional(), // Optional: request specific local version
   rng_ln_s: z.number().int().min(1).optional(), // 1-indexed start line
   rng_ln_c: z.number().int().min(0).optional(), // Number of lines to retrieve from start line (0 means to end of note)
@@ -108,7 +108,7 @@ export const PatchOperationSchema = PatchOperationObjectSchema.refine(
 );
 
 const SaveInputObjectSchema = z.object({
-  id: z.string().uuid().optional(), // If undefined, create new note
+  id: z.string().min(1).optional(), // Changed from .uuid(). If undefined, create new note
   l_ver: z.number().int().optional(), // Required if id is present (updating existing note)
   s_ver: z.number().int().optional(), // Expected server version (for conflict detection on server side)
   txt: z.string().optional(),
@@ -165,7 +165,7 @@ export const ManageResetCacheActionSchema = z.object({ act: z.literal('reset_cac
 
 export const ManageNoteActionSchema = z.object({
   act: z.enum(['trash', 'untrash', 'delete_permanently']),
-  id: z.string().uuid(),
+  id: z.string().min(1),
   l_ver: z.number().int(), // Mandatory for note actions
 });
 
@@ -183,7 +183,7 @@ export const ManageResetCacheOutputSchema = z.object({
   full_resync_triggered: z.boolean(),
 });
 export const ManageNoteActionOutputSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().min(1),
   status: z.enum(['trashed', 'untrashed', 'deleted']),
   new_l_ver: z.number().int().optional(), // if applicable, e.g. after a trash/untrash that Simperium confirms with new version
   new_s_ver: z.number().int().optional(),

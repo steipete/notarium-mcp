@@ -63,6 +63,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
     *   **Simplicity of Setup:** Configuration is primarily through environment variables, fitting common deployment patterns for tools run via `npx` or configured by a host application (e.g., Cloud Desktop).
     *   **Clear Error Reporting:** Provides structured and actionable error messages to the LLM client.
     *   **Extensibility (Future):** While initially targeting Simplenote, the architecture should allow for potential adaptation to other note-taking backends in the future by isolating backend-specific logic.
+    *   **Portability:** Utilizes `sql.js` (SQLite compiled to WebAssembly) for the local cache, enhancing portability across environments where native Node.js addons might be problematic.
 
 **2. Core Architecture & Component Responsibilities**
 
@@ -89,7 +90,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
     |     v             v                     |
     | +---------------------+ +---------------------+
     | | Backend API Client  | | Local Cache Module  |
-    | | (Simperium HTTP/S)  | | (SQLite/SQLCipher)  |
+    | | (Simperium HTTP/S)  | | (SQLite via sql.js) |
     | +---------------------+ +---------------------+
     |     ^                                     |
     |     | (Sync Operations)                   | (Updates Cache)
@@ -115,7 +116,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 *   **Component Breakdown:**
     *   **MCP Server Core:** An external Node.js MCP framework/library chosen by the implementer. Responsible for `stdio` JSON-RPC 2.0 message parsing, routing `method` calls to registered tool handlers, and formatting/sending responses/errors.
     *   **Tool Handlers (`src/tools/`):** Modules for `list.ts`, `get.ts`, `save.ts`, `manage.ts`. Each exports an `async` function that takes validated parameters (after Zod parsing) and returns a result or throws a `NotariumError`.
-    *   **Local Cache Module (`src/cache/sqlite.ts`):** Manages the `better-sqlite3` / `better-sqlite3-sqlcipher` connection. Executes SQL queries. Handles schema creation and startup checks (owner, schema version, encryption).
+    *   **Local Cache Module (`src/cache/sqlite.ts`):** Manages the `sql.js` (SQLite WASM) database instance. Executes SQL queries. Handles schema creation and startup checks (owner, schema version).
     *   **Backend API Client (`src/backend/simperium-api.ts`):** Handles all HTTP/S communication with Simperium. Manages authentication token, retries on 401/429, applies timeouts.
     *   **Backend Sync Service (`src/sync/sync-service.ts`):** Background async loop to pull external changes from Simperium and update the local cache. Manages `backend_cursor`.
     *   **Configuration (`src/config.ts`):** Loads and validates environment variables. Provides typed configuration values.
@@ -131,8 +132,8 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 *   **Variables List (from Version 3.2):**
     *   `SIMPLENOTE_USERNAME` (**Required**)
     *   `SIMPLENOTE_PASSWORD` (**Required**)
-    *   `DB_ENCRYPTION_KEY` (**Optional**. Default: undefined - DB unencrypted)
-    *   `DB_ENCRYPTION_KDF_ITERATIONS` (Optional, Default: `310000`)
+    *   `DB_ENCRYPTION_KEY` (**Currently NOT USED** with `sql.js` implementation. Default: undefined. Originally for SQLCipher.)
+    *   `DB_ENCRYPTION_KDF_ITERATIONS` (**Currently NOT USED**. Optional, Default: `310000`. Originally for SQLCipher.)
     *   `SYNC_INTERVAL_SECONDS` (Optional, Default: `300`, Min: `60`)
     *   `API_TIMEOUT_SECONDS` (Optional, Default: `30`, Min: `5`)
     *   `LOG_LEVEL` (Optional, Default: `INFO`. Valid: `trace`, `debug`, `info`, `warn`, `error`, `fatal`)
@@ -147,44 +148,50 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
     *   `SIMPERIUM_APP_ID = 'chalk-bump-f49'`
     *   `SIMPERIUM_API_KEY = 'e2f0978acfea407aa23fdf557478d3f2'`
 *   **Database Encryption Key (`DB_ENCRYPTION_KEY`):**
-    *   Provided via environment variable. If set, enables SQLCipher encryption.
-    *   **Documentation MUST emphasize choosing a strong, unique passphrase.**
-    *   The key itself is never stored in the database. The derived key (after PBKDF2) is used by SQLCipher in memory.
+    *   Provided via environment variable. **Currently NOT USED for database file encryption as `sql.js` is used instead of SQLCipher.** The `sql.js` library loads the database into memory; persistence is handled by reading/writing the entire DB image.
+    *   (Original SQLCipher Spec: Documentation MUST emphasize choosing a strong, unique passphrase. The key itself is never stored in the database. The derived key (after PBKDF2) is used by SQLCipher in memory.)
 *   **Salt for DB Key Derivation (`db_key_salt_hex`):**
-    *   A 16-byte cryptographically secure random salt, generated using `crypto.randomBytes(16).toString('hex')`.
-    *   Generated *once* when an encrypted database is first created by MCP Notarium.
-    *   Stored in plaintext in the `sync_metadata` table (key: `db_key_salt_hex`) *inside the encrypted database*. SQLCipher needs this salt to be available *after* the database is opened with the main derived key if it were to re-derive or verify keys, but primarily it's for us to re-derive the key correctly on subsequent starts if we only have the user's passphrase. For SQLCipher's `PRAGMA cipher_kdf_salt`, it's set on DB creation and SQLCipher handles it internally.
+    *   **NOT CURRENTLY USED** as SQLCipher is not implemented.
+    *   (Original SQLCipher Spec: A 16-byte cryptographically secure random salt, generated using `crypto.randomBytes(16).toString('hex')`. Generated *once* when an encrypted database is first created by MCP Notarium. Stored in plaintext in the `sync_metadata` table (key: `db_key_salt_hex`) *inside the encrypted database*. SQLCipher needs this salt to be available *after* the database is opened with the main derived key if it were to re-derive or verify keys, but primarily it's for us to re-derive the key correctly on subsequent starts if we only have the user's passphrase. For SQLCipher's `PRAGMA cipher_kdf_salt`, it's set on DB creation and SQLCipher handles it internally.)
 *   **Salt for Owner Identity Hash (`OWNER_IDENTITY_SALT`):**
-    *   A hard-coded, unique, long, random string constant within MCP Notarium (e.g., `const OWNER_IDENTITY_SALT = "MCPNotarium_SimplenoteUserSalt_v1_a7b3c9d8e2f1";` - generate a new real one). Used as `sha256(SIMPLENOTE_USERNAME + OWNER_IDENTITY_SALT)`.
+    *   A hard-coded, unique, long, random string constant within MCP Notarium (e.g., `const OWNER_IDENTITY_SALT = "MCPNotarium_SimplenoteUserSalt_v1_a7b3c9d8e2f1";` - generate a new real one). Used as `sha256(SIMPLENOTE_USERNAME + OWNER_IDENTITY_SALT)`. The hash is used in the database filename to provide user-specific cache files.
 
 **6. Local Cache Module: SQLite with Optional SQLCipher**
 
-*   **Database File Handling (as per v3.2):**
-    *   Encrypted: `notarium_cache.sqlite.encrypted` (if `DB_ENCRYPTION_KEY` set).
-    *   Unencrypted: `notarium_cache.sqlite` (if `DB_ENCRYPTION_KEY` not set).
-    *   Also manage associated `-wal` and `-shm` files during deletion.
-*   **NPM Packages:** Dynamically require `better-sqlite3-sqlcipher` if `DB_ENCRYPTION_KEY` is set; otherwise, require `better-sqlite3`. If `better-sqlite3-sqlcipher` is required but fails to load (e.g., native addon issue), log CRITICAL and EXIT 1.
-*   **SQLCipher Key Derivation (as per v3.2 Section 3).**
-*   **Startup Checks (Order is important - As per v3.2):**
+*   **Local Cache Module: SQLite via `sql.js` (WASM)**
+
+*   **6.1. Database File & Encryption Mode**
+    *   **Database Implementation:** Uses `sql.js`, which loads the SQLite database as a WebAssembly module. The database is primarily managed in memory during runtime.
+    *   **Persistence:** The database is loaded from a file at startup and saved back to a file on graceful shutdown (or potentially at intervals if implemented).
+    *   **Filename:** Typically `notarium-cache-${ownerHash}.sqlite3`, where `${ownerHash}` is derived from `SIMPLENOTE_USERNAME`. Stored in a `.cache` directory within the project workspace or an OS-specific cache directory.
+    *   **Encryption:** **NOT IMPLEMENTED in the current `sql.js`-based version.** The `DB_ENCRYPTION_KEY` environment variable is not used to encrypt the database file. The database file is stored unencrypted.
+    *   (Original SQLCipher Spec: Encrypted: `notarium_cache.sqlite.encrypted` (if `DB_ENCRYPTION_KEY` set). Unencrypted: `notarium_cache.sqlite` (if `DB_ENCRYPTION_KEY` not set). Also manage associated `-wal` and `-shm` files during deletion.)
+*   **NPM Packages:** Uses `sql.js`. Requires providing the `.wasm` file for `sql.js` (e.g., by packaging it in an `assets` directory).
+    *   (Original SQLCipher Spec: Dynamically require `better-sqlite3-sqlcipher` if `DB_ENCRYPTION_KEY` is set; otherwise, require `better-sqlite3`. If `better-sqlite3-sqlcipher` is required but fails to load (e.g., native addon issue), log CRITICAL and EXIT 1.)
+
+*   **6.2. SQLCipher Key Derivation Details**
+    *   **NOT APPLICABLE.** This section is specific to SQLCipher, which is not currently used. The `sql.js` implementation does not use this key derivation strategy.
+*   **Startup Checks (Order is important - As per v3.2, adapted for `sql.js`):**
     1.  Load Env Vars.
-    2.  Determine target DB file & encryption mode.
-    3.  If encrypted mode but `better-sqlite3-sqlcipher` fails to load: CRITICAL EXIT.
-    4.  Attempt to open DB & apply keying PRAGMAs. Run `PRAGMA integrity_check;`.
-        *   On decryption failure (e.g., "file is not a database" with SQLCipher when key is wrong): Log INFO, delete DB file(s), set `new_db_required = true`.
-        *   On other open/integrity check failure: Log INFO "DB corrupt?", delete DB file(s), set `new_db_required = true`.
-    5.  If unencrypted mode requested but `*.sqlite.encrypted` exists: CRITICAL EXIT (instruct user).
-    6.  If unencrypted mode success: Log WARNING.
-    7.  **If DB opened successfully and not `new_db_required`:**
-        *   `db_schema_ver = db.pragma('user_version', {simple: true});`. `CURRENT_APP_SCHEMA_VERSION = 1;`.
-        *   If `db_schema_ver < CURRENT_APP_SCHEMA_VERSION` or (`db_schema_ver == 0` and DB is not empty): CRITICAL EXIT (schema too old).
-        *   If `db_schema_ver > CURRENT_APP_SCHEMA_VERSION`: CRITICAL EXIT (schema too new).
-        *   Check `owner_identity_hash` against current `SIMPLENOTE_USERNAME`. If mismatch: Log INFO, close DB, delete files, set `new_db_required = true`.
+    2.  Determine target DB file based on `owner_identity_hash`.
+    3.  Locate and load `sql.js` WASM binary. If loading fails, CRITICAL EXIT.
+    4.  Attempt to load DB from file into `sql.js` instance.
+        *   If file doesn't exist (`ENOENT`): Log INFO, set `new_db_required = true`.
+        *   On other load failures (e.g., corrupt file): Log INFO "DB corrupt?", delete DB file, set `new_db_required = true`.
+    5.  (Original SQLCipher checks for encrypted/unencrypted mode mismatch are NOT APPLICABLE).
+    6.  (Original SQLCipher warning for unencrypted mode is NOT APPLICABLE as it's always unencrypted with current `sql.js` setup).
+    7.  **If DB loaded successfully and not `new_db_required`:**
+        *   `db_schema_ver = db.pragma('user_version', {simple: true});`. `CURRENT_APP_SCHEMA_VERSION = 1;` (or current version).
+        *   If `db_schema_ver < CURRENT_APP_SCHEMA_VERSION` or (`db_schema_ver == 0` and DB is not empty): Log INFO "Schema too old", delete DB file, set `new_db_required = true`.
+        *   If `db_schema_ver > CURRENT_APP_SCHEMA_VERSION`: Log INFO "Schema too new", delete DB file, set `new_db_required = true`.
+        *   (Original SQLCipher spec for `owner_identity_hash` check *inside* the DB is not implemented. The filename provides some level of owner separation).
 *   **SQLite PRAGMAs (after successful open/keying):**
     *   `PRAGMA journal_mode=WAL;`
     *   `PRAGMA synchronous=NORMAL;`
     *   `PRAGMA foreign_keys=ON;`
 *   **Table Schema Creation (if `new_db_required` or tables don't exist):**
     *   Create `notes`, `notes_fts` (with triggers), and `sync_metadata` tables as per spec v3.2.
+    *   The `sync_metadata` table will store `backend_cursor` and other sync-related metrics. It will NOT store `db_key_salt_hex` or `owner_identity_hash` (as SQLCipher is not used, and owner hash is in filename).
     *   Set `PRAGMA user_version = ${CURRENT_APP_SCHEMA_VERSION};` after creating tables.
 *   **FTS5 Tokenizer:** `porter unicode61 remove_diacritics 1` (Enable diacritics removal for broader matching).
 
@@ -197,7 +204,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 *   **Delta Sync `PAGE_SIZE` for `/index?since=` calls:** `500`.
 
 **9. `zod` Schemas for Tool I/O Validation**
-(Schemas as fully defined in Version 3.2 specification, including all tool inputs, outputs, and shared types like `ListItemSchema`, `NoteDataSchema`, `ServerStatsSchema`, etc. These are the contract for the MCP interface.)
+(Schemas as fully defined in Version 3.2 specification, with **Note ID fields updated from `z.string().uuid()` to `z.string().min(1)`** to reflect that Simplenote IDs are not always UUIDs.)
 
 **10. MCP Tool Definitions (Service: MCP Notarium)**
 
@@ -230,16 +237,18 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
         10. **Count Query:** `SELECT COUNT(*) as total FROM notes WHERE ${SQL_WHERE_CLAUSES.join(" AND ") || '1=1'};` (Execute with `SQL_PARAMS` excluding FTS term if no FTS query). Get `total_items`.
         11. **Data Query:** `SELECT notes.id, notes.l_ver, notes.txt, notes.tags, notes.mod_at, notes.trash FROM notes WHERE ${SQL_WHERE_CLAUSES.join(" AND ") || '1=1'} ORDER BY ${ORDER_BY} LIMIT ? OFFSET ?;`. (Execute with all `SQL_PARAMS`, plus `input.lim`, `(input.page - 1) * input.lim`).
         12. **Process Rows:** For each row, generate `title_prev` (first non-empty trimmed line of `txt`, max 80 chars; `""` if note empty/whitespace). Map to `ListItemSchema`.
+            *   **Note:** Use `ListItemSchema.safeParse()` to handle potential data inconsistencies. Log and skip invalid items.
     *   **Output**: `ListOutputSchema` (`items: ListItem[]`, `next_page?: number`). Calculate `next_page`.
 *   **10.2. Tool: `get`**
     *   (As per v3.2. Handles `rng_ln_s`, `rng_ln_c`. If range end exceeds lines, returns to actual end. Sets `txt_partial`, `txt_tot_ln`).
 *   **10.3. Tool: `save`**
     *   (As per v3.2. `l_ver` required for updates. Handles `txt` OR `txt_patch`. `txt_patch` line numbers 1-indexed, relative to `l_ver`'s content state. Server processes `del` (high to low ln), `mod`, `add` (low to high ln). Synchronous backend write using `s_ver` from local DB. Updates local cache only on Simperium success with Simperium's response object, prioritizing `response_note.version` for new `s_ver`. Handles Simperium 409/412 version conflict with specific `NotariumError` and resolution hint).
+    *   **Note ID:** Generates a new string ID (e.g. `uuidv4()`) if not provided (for new notes). Client-provided IDs for new notes are also acceptable if they are non-empty strings.
 *   **10.4. Tool: `manage`**
-    *   (As per v3.2. Note actions are sync backend-first. `l_ver` mandatory for note actions. `get_stats` populates full `ServerStatsSchema`, including `mcp_notarium_version` from `package.json`, `node_version` from `process.version`, `memory_rss_mb` from `process.memoryUsage().rss`. `db_encryption` status based on `DB_ENCRYPTION_KEY` usage. `reset_cache` deletes DB files, sets `global.fullResyncRequiredByReset = true`).
+    *   (As per v3.2. Note actions are sync backend-first. `l_ver` mandatory for note actions. `get_stats` populates full `ServerStatsSchema`, including `mcp_notarium_version` from `package.json`, `node_version` from `process.version`, `memory_rss_mb` from `process.memoryUsage().rss`. `db_encryption` status will be 'disabled' or 'unavailable' with `sql.js`. `reset_cache` deletes DB files, sets `global.fullResyncRequiredByReset = true`).
 
 **11. NPM Dependencies & Project Setup**
-*   **Production:** `axios` (or `node-fetch`), `better-sqlite3`, `zod`, `pino`, `uuid`, `dotenv`. `better-sqlite3-sqlcipher` (as an optional peer/try-require for encrypted mode).
+*   **Production:** `axios` (or `node-fetch`), `sql.js` (and its `.wasm` file), `zod`, `pino`, `uuid`, `dotenv`.
 *   **Development:** `@types/...` for all used packages, `typescript`, `tsup` or `esbuild` (for compilation/bundling), `pino-pretty`, testing libraries (`jest` or `vitest`, `@types/jest` or `@types/vitest`), `eslint`, `prettier`.
 *   `package.json` scripts: `build`, `start`, `dev` (with `ts-node-dev` or similar), `lint`, `test`.
 
@@ -313,12 +322,13 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 
 **18. Design Decisions & Rationale**
     *   **Synchronous Backend Writes for Tools:** Chosen over optimistic local writes to provide immediate and reliable success/failure feedback to the LLM, crucial for agent workflows. Assumes LLM client and MCP Notarium are online. Mitigates complex disconnected error reporting and data divergence issues. Increases write latency but prioritizes data integrity from LLM's perspective.
-    *   **SQLite as Pure Cache with Auto-Reset:** If credentials (`SIMPLENOTE_USERNAME`) or DB encryption key (`DB_ENCRYPTION_KEY`) change, or if the DB is corrupt or schema mismatches, the local SQLite cache is automatically deleted and rebuilt. This is acceptable because the cache is not the source of truth and Simplenote is. This simplifies recovery for the user in an `npx` environment.
+    *   **SQLite as Pure Cache with Auto-Reset:** If credentials (`SIMPLENOTE_USERNAME`) change, or if the DB is corrupt or schema mismatches, the local SQLite cache is automatically deleted and rebuilt. This is acceptable because the cache is not the source of truth and Simplenote is. This simplifies recovery for the user in an `npx` environment.
     *   **Environment Variables for Credentials:** Selected over interactive setup (like `keytar`) due to the `npx` execution model and declarative configuration via a host app's JSON file. User is responsible for securing their config file / environment. `SIMPLENOTE_` prefix for backend-specific creds, no prefix or `DB_` for Notarium-specific ones.
     *   **Limited Toolset & Overloaded `manage` Tool:** To adhere to constraints on the number of exposed MCP tools, functionality like server stats and cache reset is consolidated under the `manage` tool, despite minor semantic impurity. This prioritizes token efficiency and limits for host applications.
-    *   **FTS5 for Search (V1):** SQLite's FTS5 is used as the primary search mechanism for text in notes. Advanced application-level fuzzy matching (e.g., `fuse.js` for typo tolerance) is deferred beyond V1 to keep initial complexity low. Keyword filters (`tag:`, `before:`, `after:`) are extracted from the query string by the server.
+    *   **FTS5 for Search (V1):** SQLite's FTS5 (provided by `sql.js`) is used as the primary search mechanism for text in notes. Advanced application-level fuzzy matching (e.g., `fuse.js` for typo tolerance) is deferred beyond V1 to keep initial complexity low. Keyword filters (`tag:`, `before:`, `after:`) are extracted from the query string by the server.
     *   **Line-Based Patching for `save`:** Chosen as a compromise between sending full note content (inefficient for LLMs with large notes) and complex character-level diffs. The `{op, ln, val}` format is deemed reasonably understandable and implementable for LLMs and the server.
-    *   **Optional Database Encryption:** Offers users a choice between maximum ease-of-use (unencrypted, no native dependency issues) and enhanced security (encrypted, potential for `better-sqlite3-sqlcipher` native build friction on some platforms).
+    *   **No Database Encryption (Current `sql.js` Setup):** The current implementation with `sql.js` does not encrypt the persisted database file. This simplifies setup by avoiding native dependencies required for SQLCipher, but offers less local data protection.
+    *   **Use of `sql.js` (SQLite WASM):** Chosen for potentially broader platform compatibility (e.g., environments where native Node.js addons for `better-sqlite3` might be difficult to build or deploy) and to avoid native dependencies. The trade-off includes differences in direct file I/O patterns and lack of built-in SQLCipher support in the typical `sql.js` package.
     *   **Textual Logging by Default for `stdio`:** Prioritizes human readability for typical MCP client interaction, with JSON as an option for advanced users or different logging transports.
     *   **No Server Port by Default:** Assumes `stdio` communication typical for MCP desktop integrations, simplifying configuration.
     *   **Hardcoded Simplenote App ID/API Key:** These are specific to client applications interfacing with Simperium for Simplenote and are not user-specific secrets.
@@ -330,6 +340,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
     *   **Schema Migrations:** No automated, non-destructive schema migrations for the SQLite database. Schema changes will require deleting the old cache.
     *   **Single User Focus:** Designed for a single Simplenote account per MCP Notarium instance.
     *   **Tag Search via FTS:** Tags are filtered via SQL `WHERE` clauses on the JSON `tags` column, not directly integrated into the main FTS5 index of note content. This means combined FTS content search + tag search relies on SQLite's query optimizer.
+    *   **Database Unencrypted:** The local SQLite cache file is not encrypted in the current `sql.js`-based implementation.
 
 **20. Future Considerations (Post-V1)**
     *   Advanced fuzzy search integration (`fuse.js`).
