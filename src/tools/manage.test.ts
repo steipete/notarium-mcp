@@ -13,7 +13,7 @@ import {
   NotariumValidationError,
   NotariumInternalError,
 } from '../errors.js';
-import type { Database as DB } from 'better-sqlite3';
+import type { Database as SqlJsDB, Statement } from 'sql.js';
 import type { BackendSyncService } from '../sync/sync-service.js';
 import type { AppConfig } from '../config.js';
 import type { SimperiumNotePayload, SimperiumSaveResponse } from '../backend/simperium-api.js';
@@ -23,27 +23,32 @@ vi.mock('../logging.js', () => ({
   default: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+// Mock the database interactions for sql.js style
 const mockDbRun = vi.fn();
-const mockDbGet = vi.fn();
-const mockDbExec = vi.fn();
-const mockDbTransaction = vi.fn((cb) => cb()); // Immediately execute the transaction callback
+const mockDbGetAsObject = vi.fn();
+const mockDbStep = vi.fn();
+const mockDbBind = vi.fn();
+const mockDbFree = vi.fn();
 const mockDbClose = vi.fn();
-let mockDbOpen = true; // To simulate db.open state for reset_cache
-const mockDbPragma = vi.fn();
+let mockDbOpen = true;
+const mockDbExec = vi.fn(); // For PRAGMA user_version etc.
+
 const mockDbPrepare = vi.fn(() => ({
   run: mockDbRun,
-  get: mockDbGet,
-  exec: mockDbExec,
+  getAsObject: mockDbGetAsObject,
+  step: mockDbStep,
+  bind: mockDbBind,
+  free: mockDbFree,
 }));
+
 const mockDb = {
   prepare: mockDbPrepare,
-  transaction: mockDbTransaction,
   close: mockDbClose,
   get open() {
     return mockDbOpen;
-  }, // Getter for .open property
-  pragma: mockDbPragma,
-} as unknown as DB;
+  },
+  exec: mockDbExec,
+} as unknown as SqlJsDB;
 
 const mockSyncServiceGetSyncStats = vi.fn();
 const mockSyncService = {
@@ -84,13 +89,15 @@ beforeEach(async () => {
     lastSyncStatus: 'idle',
     consecutiveErrorCount: 0,
   });
-  mockDbGet.mockImplementation((query, ...args) => {
+  mockDbGetAsObject.mockImplementation((query, ...args) => {
     if (query.includes('SELECT COUNT(*) as count FROM notes')) return { count: 10 };
     if (query.includes('sync_metadata')) return { value: 'dummy_meta_value' };
     if (query.includes('FROM notes WHERE id = ? AND l_ver = ?')) return sampleExistingNote;
     return undefined;
   });
-  mockDbPragma.mockReturnValue(1);
+  mockDbStep.mockReturnValue(true);
+  mockDbBind.mockReturnValue(true);
+  mockDbFree.mockReturnValue(true);
 });
 
 vi.mock('fs', () => ({
@@ -128,13 +135,15 @@ const sampleAppConfig: AppConfig = {
   OWNER_IDENTITY_SALT: 'test-salt',
 };
 
-const sampleNoteId = '550e8400-e29b-41d4-a716-446655440001'; // Valid UUID format
+const sampleNoteId = '550e8400-e29b-41d4-a716-446655440001';
 const sampleExistingNote = {
   id: sampleNoteId,
-  l_ver: 3,
-  s_ver: 15,
-  txt: 'Manage me',
+  local_version: 3,
+  server_version: 15,
+  text: 'Manage me',
   tags: JSON.stringify(['manageable']),
+  modified_at: Date.now() - 10000,
+  created_at: Date.now() - 20000,
   trash: 0,
 };
 
@@ -151,22 +160,24 @@ describe('handleManage Tool', () => {
       lastSyncStatus: 'idle',
       consecutiveErrorCount: 0,
     });
-    mockDbGet.mockImplementation((query?: string, ..._args: any[]) => {
+    mockDbGetAsObject.mockImplementation((query?: string, ..._args: any[]) => {
       if (query && query.includes('SELECT COUNT(*) as count FROM notes')) return { count: 10 };
       if (query && query.includes('sync_metadata')) return { value: 'dummy_meta_value' };
       if (query && query.includes('FROM notes WHERE id = ? AND l_ver = ?'))
         return sampleExistingNote;
       return undefined;
     });
-    mockDbPragma.mockReturnValue(1);
-    mockDbTransaction.mockImplementation((callback: () => any) => callback());
+    mockDbStep.mockReturnValue(true);
+    mockDbBind.mockReturnValue(true);
+    mockDbFree.mockReturnValue(true);
+    mockDbExec.mockImplementation((callback: () => any) => callback());
   });
 
   describe('Action: get_stats', () => {
     it('should return server statistics successfully', async () => {
       mockDbPrepare.mockImplementation((query?: string) => ({
         run: mockDbRun,
-        get: vi.fn(() => {
+        getAsObject: vi.fn(() => {
           if (query && query.includes('COUNT(*)')) return { count: 123 };
           if (query && query.includes("key = 'last_successful_sync_at'"))
             return { value: '1670000000' };
@@ -176,10 +187,11 @@ describe('handleManage Tool', () => {
           if (query && query.includes('sync_metadata')) return { value: 'default_stat_meta' };
           return { value: 'other_value' };
         }),
-        exec: mockDbExec,
+        step: mockDbStep,
+        bind: mockDbBind,
+        free: mockDbFree,
       }));
-      mockDbPragma.mockReturnValue(2);
-      const params = ManageInputSchema.parse({ act: 'get_stats' });
+      const params = ManageInputSchema.parse({ action: 'get_stats' });
       const result = (await handleManage(
         params,
         mockDb,
@@ -202,7 +214,7 @@ describe('handleManage Tool', () => {
 
   describe('Action: reset_cache', () => {
     it('should close DB, delete files, and set fullResyncRequiredByReset flag', async () => {
-      const params = ManageInputSchema.parse({ act: 'reset_cache' });
+      const params = ManageInputSchema.parse({ action: 'reset_cache' });
       const result = (await handleManage(
         params,
         mockDb,
@@ -219,7 +231,7 @@ describe('handleManage Tool', () => {
     });
     it('should handle DB already closed during reset_cache', async () => {
       mockDbOpen = false; // Simulate DB already closed
-      const params = ManageInputSchema.parse({ act: 'reset_cache' });
+      const params = ManageInputSchema.parse({ action: 'reset_cache' });
       await handleManage(params, mockDb, mockSyncService, sampleAppConfig);
       expect(mockDbClose).not.toHaveBeenCalled(); // Should not attempt to close an already closed DB
       const fsMock = await import('fs');
@@ -229,30 +241,22 @@ describe('handleManage Tool', () => {
 
   describe('Note Actions (trash, untrash, delete_permanently)', () => {
     it('should trash a note successfully', async () => {
-      mockDbPrepare.mockImplementationOnce(() => ({
-        run: mockDbRun,
-        get: vi.fn(() => sampleExistingNote),
-        exec: mockDbExec,
-      }));
+      mockDbGetAsObject.mockReturnValueOnce(sampleExistingNote);
       const mockServerResponse: SimperiumSaveResponse = {
         id: sampleNoteId,
-        version: sampleExistingNote.s_ver + 1,
+        version: sampleExistingNote.server_version! + 1,
         data: {
-          content: sampleExistingNote.txt,
+          content: sampleExistingNote.text,
           tags: JSON.parse(sampleExistingNote.tags),
           deleted: true,
           modificationDate: Math.floor(Date.now() / 1000),
-          creationDate: undefined,
-          publishURL: undefined,
-          shareURL: undefined,
-          systemTags: undefined,
         },
       };
       mockSimperiumSaveNoteFn.mockResolvedValueOnce(mockServerResponse);
       const params = ManageInputSchema.parse({
-        act: 'trash',
+        action: 'trash',
         id: sampleNoteId,
-        l_ver: sampleExistingNote.l_ver,
+        local_version: sampleExistingNote.local_version,
       });
       const result = (await handleManage(
         params,
@@ -265,47 +269,39 @@ describe('handleManage Tool', () => {
         sampleNoteId,
         expect.objectContaining({
           deleted: true,
-          content: sampleExistingNote.txt,
+          content: sampleExistingNote.text,
           tags: JSON.parse(sampleExistingNote.tags),
         }),
-        sampleExistingNote.s_ver,
+        sampleExistingNote.server_version,
       );
-      expect(mockDbRun).toHaveBeenCalledWith(
+      expect(mockDbRun).toHaveBeenCalledWith([
         1,
         mockServerResponse.version,
-        sampleExistingNote.l_ver + 1,
+        sampleExistingNote.local_version + 1,
         sampleNoteId,
-      );
+      ]);
       expect(result.status).toBe('trashed');
-      expect(result.new_s_ver).toBe(mockServerResponse.version);
+      expect(result.new_server_version).toBe(mockServerResponse.version);
     });
 
     it('should untrash a note successfully', async () => {
       const trashedNote = { ...sampleExistingNote, trash: 1 };
-      mockDbPrepare.mockImplementationOnce(() => ({
-        run: mockDbRun,
-        get: vi.fn(() => trashedNote),
-        exec: mockDbExec,
-      }));
+      mockDbGetAsObject.mockReturnValueOnce(trashedNote);
       const mockServerResponse: SimperiumSaveResponse = {
         id: sampleNoteId,
-        version: trashedNote.s_ver + 1,
+        version: trashedNote.server_version! + 1,
         data: {
-          content: trashedNote.txt,
+          content: trashedNote.text,
           tags: JSON.parse(trashedNote.tags),
           deleted: false,
           modificationDate: Math.floor(Date.now() / 1000),
-          creationDate: undefined,
-          publishURL: undefined,
-          shareURL: undefined,
-          systemTags: undefined,
         },
       };
       mockSimperiumSaveNoteFn.mockResolvedValueOnce(mockServerResponse);
       const params = ManageInputSchema.parse({
-        act: 'untrash',
+        action: 'untrash',
         id: sampleNoteId,
-        l_ver: trashedNote.l_ver,
+        local_version: trashedNote.local_version,
       });
       const result = (await handleManage(
         params,
@@ -318,30 +314,27 @@ describe('handleManage Tool', () => {
         sampleNoteId,
         expect.objectContaining({
           deleted: false,
-          content: trashedNote.txt,
+          content: trashedNote.text,
           tags: JSON.parse(trashedNote.tags),
         }),
-        trashedNote.s_ver,
+        trashedNote.server_version,
       );
-      expect(mockDbRun).toHaveBeenCalledWith(
+      expect(mockDbRun).toHaveBeenCalledWith([
         0,
         mockServerResponse.version,
-        trashedNote.l_ver + 1,
+        trashedNote.local_version + 1,
         sampleNoteId,
-      );
+      ]);
       expect(result.status).toBe('untrashed');
+      expect(result.new_server_version).toBe(mockServerResponse.version);
     });
 
     it('should delete a note permanently (locally)', async () => {
-      mockDbPrepare.mockImplementationOnce(() => ({
-        run: mockDbRun,
-        get: vi.fn(() => sampleExistingNote),
-        exec: mockDbExec,
-      }));
+      mockDbGetAsObject.mockReturnValueOnce(sampleExistingNote);
       const params = ManageInputSchema.parse({
-        act: 'delete_permanently',
+        action: 'delete_permanently',
         id: sampleNoteId,
-        l_ver: sampleExistingNote.l_ver,
+        local_version: sampleExistingNote.local_version,
       });
       const result = (await handleManage(
         params,
@@ -357,20 +350,16 @@ describe('handleManage Tool', () => {
         expect.stringContaining('DELETE FROM notes_fts WHERE id = ?'),
       );
       expect(mockDbRun).toHaveBeenCalledWith(sampleNoteId); // Called twice, once for notes, once for fts
-      expect(mockDbTransaction).toHaveBeenCalled();
+      expect(mockDbExec).toHaveBeenCalled();
       expect(result.status).toBe('deleted');
     });
 
     it('should throw NotariumResourceNotFoundError if note not found for action', async () => {
-      mockDbPrepare.mockImplementation(() => ({
-        run: mockDbRun,
-        get: vi.fn(() => undefined),
-        exec: mockDbExec,
-      }));
+      mockDbGetAsObject.mockImplementation(() => undefined);
       const params = ManageInputSchema.parse({
-        act: 'trash',
+        action: 'trash',
         id: '550e8400-e29b-41d4-a716-446655440000',
-        l_ver: 1,
+        local_version: 1,
       });
       await expect(handleManage(params, mockDb, mockSyncService, sampleAppConfig)).rejects.toThrow(
         NotariumResourceNotFoundError,

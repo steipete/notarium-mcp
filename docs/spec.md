@@ -36,7 +36,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
     *   10.1. General Tool Behavior (Validation, Sync Writes, Errors)
     *   10.2. Tool: `list` (Detailed Logic)
     *   10.3. Tool: `get` (Detailed Logic)
-    *   10.4. Tool: `save` (Detailed Logic, including `txt_patch`)
+    *   10.4. Tool: `save` (Detailed Logic, including `text_patch`)
     *   10.5. Tool: `manage` (Detailed Logic for all actions)
 11. NPM Dependencies & Project Setup
 12. Logging (`pino`)
@@ -195,6 +195,21 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
     *   Set `PRAGMA user_version = ${CURRENT_APP_SCHEMA_VERSION};` after creating tables.
 *   **FTS5 Tokenizer:** `porter unicode61 remove_diacritics 1` (Enable diacritics removal for broader matching).
 
+**6.5. Table Schemas (`notes`, `notes_fts`, `sync_metadata`)**
+*   `notes` table:
+    *   `id TEXT PRIMARY KEY NOT NULL`
+    *   `text TEXT NOT NULL` (Main content of the note)
+    *   `tags TEXT NOT NULL DEFAULT '[]'` (JSON string array)
+    *   `created_at INTEGER NOT NULL` (Unix epoch seconds)
+    *   `modified_at INTEGER NOT NULL` (Unix epoch seconds)
+    *   `local_version INTEGER NOT NULL DEFAULT 1`
+    *   `server_version INTEGER` (Optional, from Simperium)
+    *   `trash INTEGER NOT NULL DEFAULT 0` (Boolean 0 or 1)
+    *   `sync_deleted INTEGER NOT NULL DEFAULT 0` (Boolean 0 or 1, tracks if delete was synced)
+*   `notes_fts` table: (FTS5 table for `text` and `tags` from `notes`)
+    *   `text`
+    *   `tags`
+
 **7. Backend API Client (Simperium)**
 (As per v3.2 - `axios`, hardcoded Simperium App ID/Key, handles token obtaining/caching and 401 re-auth, applies `API_TIMEOUT_SECONDS`, handles 429 with `Retry-After` or exponential backoff for specific request retries).
 
@@ -204,7 +219,54 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
 *   **Delta Sync `PAGE_SIZE` for `/index?since=` calls:** `500`.
 
 **9. `zod` Schemas for Tool I/O Validation**
-(Schemas as fully defined in Version 3.2 specification, with **Note ID fields updated from `z.string().uuid()` to `z.string().min(1)`** to reflect that Simplenote IDs are not always UUIDs.)
+(Schemas as fully defined in Version 3.2 specification, with **Note ID fields updated from `z.string().uuid()` to `z.string().min(1)`** to reflect that Simplenote IDs are not always UUIDs. `l_ver` becomes `local_version`, `s_ver` becomes `server_version`, `mod_at` becomes `modified_at`, `crt_at` becomes `created_at`, `rng_ln_s` becomes `range_line_start`, `rng_ln_c` becomes `range_line_count`.)
+
+*   **`ListItemSchema`**:
+    *   `id: z.string().min(1)`
+    *   `local_version: z.number().int()` (Local cache version of the note)
+    *   `title_prev: z.string().max(80)`
+    *   `tags: NoteTagsSchema`
+    *   `modified_at: UnixTimestampSchema` (Last modified timestamp (epoch seconds))
+    *   `trash: z.boolean()`
+*   **`NoteDataSchema`**:
+    *   `id: z.string().min(1)`
+    *   `local_version: z.number().int()`
+    *   `server_version: z.number().int().optional()` (Server version of the note from Simperium)
+    *   `text: z.string()` (Main content of the note)
+    *   `tags: NoteTagsSchema`
+    *   `modified_at: UnixTimestampSchema`
+    *   `created_at: UnixTimestampSchema.optional()`
+    *   `trash: z.boolean()`
+    *   `txt_partial: z.boolean().optional()`
+    *   `txt_tot_ln: z.number().int().optional()`
+    *   `range_line_start: z.number().int().positive().optional()`
+    *   `range_line_count: z.number().int().nonnegative().optional()`
+*   **`GetInputSchema`**:
+    *   `id: z.string().min(1)`
+    *   `local_version: z.number().int().optional()`
+    *   `range_line_start: z.number().int().min(1).optional()`
+    *   `range_line_count: z.number().int().min(0).optional()`
+*   **`SaveInputSchema`**: (Refinement logic for `local_version` dependency on `id`)
+    *   `id: z.string().min(1).optional()`
+    *   `local_version: z.number().int().optional()` (Required if `id` is present)
+    *   `server_version: z.number().int().optional()` (Expected server version for conflict detection)
+    *   `text: z.string().optional()` (Full text content of the note)
+    *   `text_patch: z.array(PatchOperationSchema).optional()` (Line-based patch for the note content)
+    *   `tags: NoteTagsSchema.optional()`
+    *   `trash: z.boolean().optional()`
+*   **`PatchOperationSchema`**:
+    *   `op: z.enum(['add', 'mod', 'del'])`
+    *   `ln: z.number().int().min(1)`
+    *   `val: z.string().optional()` (Required for `add`/`mod`)
+*   **`ManageInputSchema`**: (For note actions like trash, untrash, delete_permanently)
+    *   `action: z.enum(['trash', 'untrash', 'delete_permanently', 'get_stats', 'reset_cache'])`
+    *   `id: z.string().min(1).optional()` (Required for note actions)
+    *   `local_version: z.number().int().optional()` (Required for note actions)
+*   **`ManageNoteActionOutputSchema`**:
+    *   `id: z.string().min(1)`
+    *   `status: z.enum(['trashed', 'untrashed', 'deleted'])`
+    *   `new_local_version: z.number().int().optional()`
+    *   `new_server_version: z.number().int().optional()` (if applicable)
 
 **10. MCP Tool Definitions (Service: MCP Notarium)**
 
@@ -229,23 +291,22 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
             *   `remaining_q_text = input.q.trim()`. If not empty, this is for FTS.
         8.  **Build SQL `WHERE` clauses:**
             *   For each tag in `effective_tags`: `SQL_WHERE_CLAUSES.push("EXISTS (SELECT 1 FROM json_each(notes.tags) WHERE value = ?)")`, `SQL_PARAMS.push(tag)`.
-            *   If `effective_dt_before`: `SQL_WHERE_CLAUSES.push("notes.mod_at < ?")`, `SQL_PARAMS.push(effective_dt_before)`.
-            *   If `effective_dt_after`: `SQL_WHERE_CLAUSES.push("notes.mod_at > ?")`, `SQL_PARAMS.push(effective_dt_after)`.
+            *   If `effective_dt_before`: `SQL_WHERE_CLAUSES.push("notes.modified_at < ?")`, `SQL_PARAMS.push(effective_dt_before)`.
+            *   If `effective_dt_after`: `SQL_WHERE_CLAUSES.push("notes.modified_at > ?")`, `SQL_PARAMS.push(effective_dt_after)`.
         9.  **FTS5 Query Part:**
-            *   If `remaining_q_text`: `fts_match_clause = "notes.rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts.txt MATCH ?)"`. `SQL_WHERE_CLAUSES.push(fts_match_clause)`. `SQL_PARAMS.push(format_for_fts(remaining_q_text))`. (Format might involve joining terms with AND, escaping).
-            *   `ORDER_BY = remaining_q_text ? "rank, notes.mod_at DESC" : "notes.mod_at DESC"`. (SQLite FTS returns `rank` implicitly).
+            *   If `remaining_q_text`: `fts_match_clause = "notes.rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts.text MATCH ?)"`. `SQL_WHERE_CLAUSES.push(fts_match_clause)`. `SQL_PARAMS.push(format_for_fts(remaining_q_text))`. (Format might involve joining terms with AND, escaping).
+            *   `ORDER_BY = remaining_q_text ? "rank, notes.modified_at DESC" : "notes.modified_at DESC"`. (SQLite FTS returns `rank` implicitly).
         10. **Count Query:** `SELECT COUNT(*) as total FROM notes WHERE ${SQL_WHERE_CLAUSES.join(" AND ") || '1=1'};` (Execute with `SQL_PARAMS` excluding FTS term if no FTS query). Get `total_items`.
-        11. **Data Query:** `SELECT notes.id, notes.l_ver, notes.txt, notes.tags, notes.mod_at, notes.trash FROM notes WHERE ${SQL_WHERE_CLAUSES.join(" AND ") || '1=1'} ORDER BY ${ORDER_BY} LIMIT ? OFFSET ?;`. (Execute with all `SQL_PARAMS`, plus `input.lim`, `(input.page - 1) * input.lim`).
-        12. **Process Rows:** For each row, generate `title_prev` (first non-empty trimmed line of `txt`, max 80 chars; `""` if note empty/whitespace). Map to `ListItemSchema`.
+        11. **Data Query:** `SELECT notes.id, notes.local_version, notes.text, notes.tags, notes.modified_at, notes.trash FROM notes WHERE ${SQL_WHERE_CLAUSES.join(" AND ") || '1=1'} ORDER BY ${ORDER_BY} LIMIT ? OFFSET ?;`. (Execute with all `SQL_PARAMS`, plus `input.limit`, `(input.page - 1) * input.limit`).
+        12. **Process Rows:** For each row, generate `title_prev` (first non-empty trimmed line of `notes.text`, max 80 chars; `""` if note empty/whitespace). Map to `ListItemSchema`. This includes mapping DB `local_version` to API `local_version`, DB `server_version` to API `server_version`, DB `modified_at` to API `modified_at`, DB `created_at` to API `created_at`, and DB `text` to API `text` (where applicable for `NoteDataSchema`).
             *   **Note:** Use `ListItemSchema.safeParse()` to handle potential data inconsistencies. Log and skip invalid items.
     *   **Output**: `ListOutputSchema` (`items: ListItem[]`, `next_page?: number`). Calculate `next_page`.
 *   **10.2. Tool: `get`**
-    *   (As per v3.2. Handles `rng_ln_s`, `rng_ln_c`. If range end exceeds lines, returns to actual end. Sets `txt_partial`, `txt_tot_ln`).
+    *   (As per v3.2. Handles `range_line_start`, `range_line_count`. If range end exceeds lines, returns to actual end. Sets `txt_partial`, `txt_tot_ln`). Input uses `local_version`. Output maps DB `local_version` to API `local_version`.
 *   **10.3. Tool: `save`**
-    *   (As per v3.2. `l_ver` required for updates. Handles `txt` OR `txt_patch`. `txt_patch` line numbers 1-indexed, relative to `l_ver`'s content state. Server processes `del` (high to low ln), `mod`, `add` (low to high ln). Synchronous backend write using `s_ver` from local DB. Updates local cache only on Simperium success with Simperium's response object, prioritizing `response_note.version` for new `s_ver`. Handles Simperium 409/412 version conflict with specific `NotariumError` and resolution hint).
-    *   **Note ID:** Generates a new string ID (e.g. `uuidv4()`) if not provided (for new notes). Client-provided IDs for new notes are also acceptable if they are non-empty strings.
+    *   (As per v3.2. `local_version` required for updates. Handles `text` OR `text_patch`. `text_patch` line numbers 1-indexed, relative to `local_version`'s content state of `text`. Server processes `del` (high to low ln), `mod`, `add` (low to high ln). Synchronous backend write using `server_version` from local DB or input. Updates local cache only on Simperium success with Simperium's response object, prioritizing `response_note.version` for new `server_version`. Handles Simperium 409/412 version conflict with specific `NotariumError` and resolution hint). Input uses `local_version`, `server_version`, `text` or `text_patch`. Output maps to `local_version`, `server_version`, `text`.
 *   **10.4. Tool: `manage`**
-    *   (As per v3.2. Note actions are sync backend-first. `l_ver` mandatory for note actions. `get_stats` populates full `ServerStatsSchema`, including `mcp_notarium_version` from `package.json`, `node_version` from `process.version`, `memory_rss_mb` from `process.memoryUsage().rss`. `db_encryption` status will be 'disabled' or 'unavailable' with `sql.js`. `reset_cache` deletes DB files, sets `global.fullResyncRequiredByReset = true`).
+    *   (As per v3.2. Note actions are sync backend-first. `local_version` mandatory for note actions. `get_stats` populates full `ServerStatsSchema`. `reset_cache` deletes DB files, sets `global.fullResyncRequiredByReset = true`). Input for note actions uses `local_version` and `action`. Output includes `new_local_version` and `new_server_version`.
 
 **11. NPM Dependencies & Project Setup**
 *   **Production:** `axios` (or `node-fetch`), `sql.js` (and its `.wasm` file), `zod`, `pino`, `uuid`, `dotenv`.
@@ -326,7 +387,7 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
     *   **Environment Variables for Credentials:** Selected over interactive setup (like `keytar`) due to the `npx` execution model and declarative configuration via a host app's JSON file. User is responsible for securing their config file / environment. `SIMPLENOTE_` prefix for backend-specific creds, no prefix or `DB_` for Notarium-specific ones.
     *   **Limited Toolset & Overloaded `manage` Tool:** To adhere to constraints on the number of exposed MCP tools, functionality like server stats and cache reset is consolidated under the `manage` tool, despite minor semantic impurity. This prioritizes token efficiency and limits for host applications.
     *   **FTS5 for Search (V1):** SQLite's FTS5 (provided by `sql.js`) is used as the primary search mechanism for text in notes. Advanced application-level fuzzy matching (e.g., `fuse.js` for typo tolerance) is deferred beyond V1 to keep initial complexity low. Keyword filters (`tag:`, `before:`, `after:`) are extracted from the query string by the server.
-    *   **Line-Based Patching for `save`:** Chosen as a compromise between sending full note content (inefficient for LLMs with large notes) and complex character-level diffs. The `{op, ln, val}` format is deemed reasonably understandable and implementable for LLMs and the server.
+    *   **Line-Based Patching for `save`:** Chosen as a compromise between sending full note content (inefficient for LLMs with large notes) and complex character-level diffs. The `text_patch` with `{op, ln, val}` format is deemed reasonably understandable and implementable for LLMs and the server.
     *   **No Database Encryption (Current `sql.js` Setup):** The current implementation with `sql.js` does not encrypt the persisted database file. This simplifies setup by avoiding native dependencies required for SQLCipher, but offers less local data protection.
     *   **Use of `sql.js` (SQLite WASM):** Chosen for potentially broader platform compatibility (e.g., environments where native Node.js addons for `better-sqlite3` might be difficult to build or deploy) and to avoid native dependencies. The trade-off includes differences in direct file I/O patterns and lack of built-in SQLCipher support in the typical `sql.js` package.
     *   **Textual Logging by Default for `stdio`:** Prioritizes human readability for typical MCP client interaction, with JSON as an option for advanced users or different logging transports.

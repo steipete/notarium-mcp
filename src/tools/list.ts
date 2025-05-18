@@ -10,7 +10,8 @@ import { NotariumDbError } from '../errors.js';
 export async function handleList(params: ListInput, db: DB): Promise<ListOutput> {
   logger.debug({ params }, 'Handling list tool request');
 
-  const { q, tags, lim = 20, page = 1, trash_s = 0, dt_before, dt_after } = params;
+  const { q, tags, limit = 20, page = 1, trash_s = 0, date_before, date_after } =
+    params;
 
   const sqlWhereClauses: string[] = [];
   const sqlParams: (string | number)[] = [];
@@ -26,45 +27,45 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
   // 3. effective_tags (Spec 10.1.Server Logic.3)
   const effectiveTags = new Set<string>(tags || []);
 
-  // 5. & 6. effective_dt_before / effective_dt_after (Spec 10.1.Server Logic.5 & 6)
-  // Dates are YYYY-MM-DD, convert to epoch seconds for comparison with mod_at
-  // dt_before means mod_at < end of that day
-  // dt_after means mod_at > start of that day
-  let effectiveDtBefore: number | null = dt_before
-    ? new Date(`${dt_before}T23:59:59.999Z`).getTime() / 1000
+  // 5. & 6. effective_date_before / effective_date_after (Spec 10.1.Server Logic.5 & 6)
+  // Dates are YYYY-MM-DD, convert to epoch seconds for comparison with modified_at
+  // date_before means modified_at < end of that day
+  // date_after means modified_at > start of that day
+  let effective_date_before: number | null = date_before
+    ? new Date(`${date_before}T23:59:59.999Z`).getTime() / 1000
     : null;
-  let effectiveDtAfter: number | null = dt_after
-    ? new Date(`${dt_after}T00:00:00.000Z`).getTime() / 1000
+  let effective_date_after: number | null = date_after
+    ? new Date(`${date_after}T00:00:00.000Z`).getTime() / 1000
     : null;
 
   // 7. Parse input.q (Spec 10.1.Server Logic.7)
-  let remainingQText = q || '';
+  let remaining_query_text = q || '';
   if (q) {
     // tag: extraction
     const tagRegex = /tag:(\S+)/g;
     let match;
-    while ((match = tagRegex.exec(remainingQText)) !== null) {
+    while ((match = tagRegex.exec(remaining_query_text)) !== null) {
       effectiveTags.add(match[1]);
     }
-    remainingQText = remainingQText.replace(tagRegex, '').trim();
+    remaining_query_text = remaining_query_text.replace(tagRegex, '').trim();
 
     // before: extraction
     const beforeRegex = /before:(\d{4}-\d{2}-\d{2})/g;
-    while ((match = beforeRegex.exec(remainingQText)) !== null) {
+    while ((match = beforeRegex.exec(remaining_query_text)) !== null) {
       const dateVal = new Date(`${match[1]}T23:59:59.999Z`).getTime() / 1000;
-      effectiveDtBefore = Math.min(effectiveDtBefore || Infinity, dateVal);
+      effective_date_before = Math.min(effective_date_before || Infinity, dateVal);
     }
-    remainingQText = remainingQText.replace(beforeRegex, '').trim();
+    remaining_query_text = remaining_query_text.replace(beforeRegex, '').trim();
 
     // after: extraction
     const afterRegex = /after:(\d{4}-\d{2}-\d{2})/g;
-    while ((match = afterRegex.exec(remainingQText)) !== null) {
+    while ((match = afterRegex.exec(remaining_query_text)) !== null) {
       const dateVal = new Date(`${match[1]}T00:00:00.000Z`).getTime() / 1000;
-      effectiveDtAfter = Math.max(effectiveDtAfter || 0, dateVal);
+      effective_date_after = Math.max(effective_date_after || 0, dateVal);
     }
-    remainingQText = remainingQText.replace(afterRegex, '').trim();
+    remaining_query_text = remaining_query_text.replace(afterRegex, '').trim();
   }
-  remainingQText = remainingQText.trim();
+  remaining_query_text = remaining_query_text.trim();
 
   // 8. Build SQL WHERE clauses (Spec 10.1.Server Logic.8)
   effectiveTags.forEach((tag) => {
@@ -72,29 +73,29 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
     sqlParams.push(tag);
   });
 
-  if (effectiveDtBefore !== null) {
-    sqlWhereClauses.push('notes.mod_at < ?');
-    sqlParams.push(effectiveDtBefore);
+  if (effective_date_before !== null) {
+    sqlWhereClauses.push('notes.modified_at < ?');
+    sqlParams.push(effective_date_before);
   }
-  if (effectiveDtAfter !== null) {
-    sqlWhereClauses.push('notes.mod_at > ?');
-    sqlParams.push(effectiveDtAfter);
+  if (effective_date_after !== null) {
+    sqlWhereClauses.push('notes.modified_at > ?');
+    sqlParams.push(effective_date_after);
   }
 
   // 9. FTS5 Query Part (Spec 10.1.Server Logic.9)
   let ftsMatchClause = '';
-  if (remainingQText) {
-    // TODO: Future enhancement - Sanitize/format remainingQText for FTS5 to handle special characters
+  if (remaining_query_text) {
+    // TODO: Future enhancement - Sanitize/format remaining_query_text for FTS5 to handle special characters
     // or structure multi-word queries (e.g., join with AND, escape quotes/operators).
     // For V1, pass as is, relying on FTS5's default parsing and 'porter unicode61' tokenizer.
-    const ftsQuery = remainingQText;
-    ftsMatchClause = 'notes.rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts.txt MATCH ?)';
+    const ftsQuery = remaining_query_text;
+    ftsMatchClause = 'notes.rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts.text MATCH ?)';
     sqlWhereClauses.push(ftsMatchClause);
     sqlParams.push(ftsQuery);
   }
 
   const whereClause = sqlWhereClauses.length > 0 ? sqlWhereClauses.join(' AND ') : '1=1';
-  const orderBy = remainingQText ? 'rank, notes.mod_at DESC' : 'notes.mod_at DESC'; // SQLite FTS provides `rank` implicitly
+  const orderBy = remaining_query_text ? 'rank, notes.modified_at DESC' : 'notes.modified_at DESC'; // SQLite FTS provides `rank` implicitly
 
   // 10. Count Query (Spec 10.1.Server Logic.10)
   const countSql = `SELECT COUNT(*) as total FROM notes WHERE ${whereClause};`;
@@ -122,9 +123,9 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
   }
 
   // 11. Data Query (Spec 10.1.Server Logic.11)
-  const offset = (page - 1) * lim;
-  const dataSql = `SELECT notes.id, notes.l_ver, notes.txt, notes.tags, notes.mod_at, notes.trash FROM notes WHERE ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?;`;
-  const finalSqlParams = [...sqlParams, lim, offset];
+  const offset = (page - 1) * limit;
+  const dataSql = `SELECT notes.id, notes.local_version, notes.text, notes.tags, notes.modified_at, notes.trash FROM notes WHERE ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?;`;
+  const finalSqlParams = [...sqlParams, limit, offset];
 
   let rows: any[];
   try {
@@ -151,7 +152,7 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
 
   // 12. Process Rows (Spec 10.1.Server Logic.12)
   const items = rows.map((row) => {
-    const titlePrev = (row.txt.split('\n')[0] || '').trim().substring(0, 80);
+    const titlePrev = (row.text.split('\n')[0] || '').trim().substring(0, 80);
     let parsedTags: string[];
     try {
       parsedTags = JSON.parse(row.tags);
@@ -164,16 +165,16 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
     }
     return ListItemSchema.parse({
       id: row.id,
-      l_ver: row.l_ver,
+      local_version: row.local_version,
       title_prev: titlePrev,
       tags: parsedTags,
-      mod_at: Math.floor(row.mod_at),
+      modified_at: Math.floor(row.modified_at),
       trash: !!row.trash,
     });
   });
 
-  const totalPages = Math.ceil(totalItems / lim);
-  const nextPage = page * lim < totalItems ? page + 1 : undefined;
+  const totalPages = Math.ceil(totalItems / limit);
+  const nextPage = page * limit < totalItems ? page + 1 : undefined;
 
   return {
     items,

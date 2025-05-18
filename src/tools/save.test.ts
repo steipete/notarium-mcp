@@ -8,7 +8,7 @@ import {
   NotariumDbError,
   NotariumBackendError,
 } from '../errors.js';
-import type { Database as DB } from 'better-sqlite3';
+import type { Database as SqlJsDB, Statement } from 'sql.js'; // Use SqlJsDB type
 import type { SimperiumNotePayload, SimperiumSaveResponse } from '../backend/simperium-api.js'; // For mocking
 
 // Mock logger
@@ -35,14 +35,43 @@ vi.mock('../backend/simperium-api.js', () => ({
 import { saveNote } from '../backend/simperium-api.js';
 const mockSimperiumSaveNote = saveNote as any;
 
-// Mock the database interactions
+// Mock the database interactions for sql.js style
 const mockDbRun = vi.fn();
-const mockDbGet = vi.fn();
+const mockDbGet = vi.fn(); // This will be for the .get on the prepared statement for fetching existing note
 const mockDbPrepare = vi.fn(() => ({
   run: mockDbRun,
-  get: mockDbGet,
+  get: mockDbGet, 
+  free: vi.fn(), 
+  bind: vi.fn(), 
+  step: vi.fn(), 
+  getAsObject: vi.fn()
 }));
-const mockDb = { prepare: mockDbPrepare } as unknown as DB;
+const mockDb = { prepare: mockDbPrepare } as unknown as SqlJsDB;
+
+const placeholderValidUuid = 'a1b2c3d4-e5f6-7890-1234-567890abcdef';
+
+// Define an interface for the DB row structure
+interface NoteDbRow {
+  id: string;
+  local_version: number;
+  server_version?: number | null;
+  text: string;
+  tags: string; // JSON string in DB
+  modified_at: number;
+  created_at?: number | null;
+  trash: number; // 0 or 1 in DB
+}
+
+const sampleExistingNote: NoteDbRow = {
+  id: placeholderValidUuid,
+  local_version: 1, // DB column name
+  server_version: 10, // DB column name
+  text: 'Original content',
+  tags: JSON.stringify(['original']),
+  modified_at: Math.floor(Date.now() / 1000) - 100, // DB uses modified_at
+  created_at: Math.floor(Date.now() / 1000) - 200, // DB uses created_at
+  trash: 0,
+};
 
 describe('applyTextPatch', () => {
   const initialText = 'line one\nline two\nline three\nline four';
@@ -147,18 +176,6 @@ describe('applyTextPatch', () => {
 });
 
 describe('handleSave Tool', () => {
-  const placeholderValidUuid = 'a1b2c3d4-e5f6-7890-1234-567890abcdef';
-  const sampleExistingNote = {
-    id: placeholderValidUuid,
-    l_ver: 1,
-    s_ver: 10,
-    txt: 'Original content',
-    tags: JSON.stringify(['original']),
-    mod_at: Math.floor(Date.now() / 1000) - 100,
-    crt_at: Math.floor(Date.now() / 1000) - 200,
-    trash: 0,
-  };
-
   beforeEach(() => {
     mockDbRun.mockReset();
     mockDbGet.mockReset();
@@ -169,7 +186,7 @@ describe('handleSave Tool', () => {
 
   it('should create a new note if no id is provided', async () => {
     const params = SaveInputSchema.parse({
-      txt: 'New note content',
+      text: 'New note content',
       tags: ['new', 'test'],
     });
 
@@ -202,35 +219,37 @@ describe('handleSave Tool', () => {
     expect(mockDbPrepare).toHaveBeenCalledWith(
       expect.stringContaining('INSERT OR REPLACE INTO notes'),
     );
-    expect(mockDbRun).toHaveBeenCalledWith(
+    expect(mockDbRun).toHaveBeenCalledWith([
       expectedUuid, // id
-      1, // l_ver (0 initial + 1)
-      1, // s_ver from response
+      1, // local_version (0 initial + 1)
+      1, // server_version from response
       'New note content',
       JSON.stringify(['new', 'test']),
-      expect.any(Number), // mod_at
-      expect.any(Number), // crt_at
+      expect.any(Number), // modified_at (this corresponds to modified_at in DB insert)
+      expect.any(Number), // created_at (this corresponds to created_at in DB insert)
       0, // trash
       0, // sync_deleted
-    );
+    ]);
     expect(result.id).toBe(expectedUuid);
-    expect(result.l_ver).toBe(1);
-    expect(result.s_ver).toBe(1);
-    expect(result.txt).toBe('New note content');
+    expect(result.local_version).toBe(1);
+    expect(result.server_version).toBe(1);
+    expect(result.text).toBe('New note content');
+    expect(result.modified_at).toEqual(expect.any(Number)); 
+    expect(result.created_at).toEqual(expect.any(Number)); // Result uses created_at
   });
 
-  it('should update an existing note if id and l_ver are provided', async () => {
+  it('should update an existing note if id and local_version are provided', async () => {
     mockDbGet.mockReturnValueOnce(sampleExistingNote); // Return the note to be updated
     const params = SaveInputSchema.parse({
       id: sampleExistingNote.id,
-      l_ver: sampleExistingNote.l_ver,
-      s_ver: sampleExistingNote.s_ver, // Client thinks this is the server version
-      txt: 'Updated content',
+      local_version: sampleExistingNote.local_version, // Map DB local_version to schema local_version
+      server_version: sampleExistingNote.server_version!, 
+      text: 'Updated content',
     });
 
     const mockServerResponse: SimperiumSaveResponse = {
       id: sampleExistingNote.id,
-      version: sampleExistingNote.s_ver + 1,
+      version: sampleExistingNote.server_version! + 1, // Simperium returns new server version
       data: {
         content: 'Updated content',
         modificationDate: Math.floor(Date.now() / 1000),
@@ -243,37 +262,39 @@ describe('handleSave Tool', () => {
     const result = await handleSave(params, mockDb);
 
     expect(mockSimperiumSaveNote).toHaveBeenCalledWith(
-      'note',
+      'note', // bucketName
       sampleExistingNote.id,
       expect.objectContaining({ content: 'Updated content' }),
-      sampleExistingNote.s_ver, // baseVersion for update
+      sampleExistingNote.server_version!, // baseVersion for update should be the server_version of the current note
     );
-    expect(mockDbRun).toHaveBeenCalledWith(
+    expect(mockDbRun).toHaveBeenCalledWith([
       sampleExistingNote.id,
-      sampleExistingNote.l_ver + 1,
-      sampleExistingNote.s_ver + 1,
+      sampleExistingNote.local_version + 1,
+      sampleExistingNote.server_version! + 1, // This is new_server_version from Simperium, maps to DB server_version
       'Updated content',
       sampleExistingNote.tags, // Unchanged tags
       expect.any(Number),
-      sampleExistingNote.crt_at,
+      sampleExistingNote.created_at, // DB uses created_at
       0,
       0,
-    );
-    expect(result.s_ver).toBe(sampleExistingNote.s_ver + 1);
+    ]);
+    expect(result.server_version).toBe(sampleExistingNote.server_version! + 1);
+    expect(result.modified_at).toEqual(expect.any(Number)); 
+    expect(result.created_at).toEqual(sampleExistingNote.created_at); // Result uses created_at
   });
 
   it('should apply txt_patch to existing note content before saving', async () => {
-    mockDbGet.mockReturnValueOnce(sampleExistingNote); // txt: 'Original content'
+    mockDbGet.mockReturnValueOnce(sampleExistingNote); 
     const params = SaveInputSchema.parse({
       id: sampleExistingNote.id,
-      l_ver: sampleExistingNote.l_ver,
-      s_ver: sampleExistingNote.s_ver,
-      txt_patch: [{ op: 'mod', ln: 1, val: 'Patched original content' }],
+      local_version: sampleExistingNote.local_version, 
+      server_version: sampleExistingNote.server_version!,
+      text_patch: [{ op: 'mod', ln: 1, val: 'Patched original content' }],
     });
 
     const mockServerResponse: SimperiumSaveResponse = {
       id: sampleExistingNote.id,
-      version: sampleExistingNote.s_ver + 1,
+      version: sampleExistingNote.server_version! + 1,
       data: {
         content: 'Patched original content',
         modificationDate: Math.floor(Date.now() / 1000),
@@ -290,7 +311,7 @@ describe('handleSave Tool', () => {
       expect.objectContaining({ content: 'Patched original content' }),
       expect.anything(),
     );
-    expect(mockDbRun).toHaveBeenCalledWith(
+    expect(mockDbRun).toHaveBeenCalledWith([
       expect.anything(),
       expect.anything(),
       expect.anything(),
@@ -300,11 +321,11 @@ describe('handleSave Tool', () => {
       expect.anything(),
       expect.anything(),
       expect.anything(),
-    );
+    ]);
   });
 
-  it('should throw NotariumValidationError if l_ver is missing for an update', async () => {
-    const params = { id: placeholderValidUuid, txt: 'some text' }; // Missing l_ver
+  it('should throw NotariumValidationError if local_version is missing for an update', async () => {
+    const params = { id: placeholderValidUuid, text: 'some text' }; // Use text
     // Not using SaveInputSchema.parse here as it would throw before handleSave is called
     await expect(handleSave(params as any, mockDb)).rejects.toThrow(NotariumValidationError);
   });
@@ -313,8 +334,8 @@ describe('handleSave Tool', () => {
     mockDbGet.mockReturnValueOnce(undefined); // Note not found
     const params = SaveInputSchema.parse({
       id: placeholderValidUuid,
-      l_ver: 1,
-      txt: 'update text',
+      local_version: 1, // Use schema field name
+      text: 'update text',
     });
     await expect(handleSave(params, mockDb)).rejects.toThrow(NotariumResourceNotFoundError);
   });
@@ -323,9 +344,9 @@ describe('handleSave Tool', () => {
     mockDbGet.mockReturnValueOnce(sampleExistingNote);
     const params = SaveInputSchema.parse({
       id: sampleExistingNote.id,
-      l_ver: sampleExistingNote.l_ver,
-      s_ver: sampleExistingNote.s_ver,
-      txt: 'update text',
+      local_version: sampleExistingNote.local_version, // Map DB local_version to schema local_version
+      server_version: sampleExistingNote.server_version!,
+      text: 'update text',
     });
     mockSimperiumSaveNote.mockRejectedValueOnce(
       new NotariumBackendError('Conflict', 'Conflict user msg', 412, 'conflict'),
@@ -333,5 +354,5 @@ describe('handleSave Tool', () => {
     await expect(handleSave(params, mockDb)).rejects.toThrow(NotariumBackendError);
   });
 
-  // Add more tests: s_ver from params vs db, tag updates, trash updates, error propagation
+  // Add more tests: server_version from params vs db, tag updates, trash updates, error propagation
 });

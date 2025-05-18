@@ -57,7 +57,7 @@ export async function handleMcpRequest(
   request: McpRequest,
   db: DB,
   syncService: BackendSyncService,
-): Promise<McpResponse> {
+): Promise<McpResponse | null> {
   logger.debug({ mcpRequest: request }, 'Handling MCP request in core handler');
 
   const { method, params, id } = request;
@@ -116,12 +116,16 @@ export async function handleMcpRequest(
   // Handle exit notification (immediate termination)
   if (method === 'exit') {
     logger.info('Received exit notification');
-    // This would be processed by the server.ts listener, we'll just acknowledge
-    return {
-      jsonrpc: '2.0',
-      id,
-      result: null
-    };
+    // Actual shutdown is typically handled by process signal handlers (SIGINT, SIGTERM)
+    // or the host environment closing stdin. This is an acknowledgement.
+    // For MCP, 'exit' is a notification, so no response should be sent.
+    return null; // Signal no response
+  }
+
+  // Handle notifications/initialized (client confirms initialization)
+  if (method === 'notifications/initialized') {
+    logger.info({ method, params }, 'Received notifications/initialized. Client ready.');
+    return null; // This is a notification, no response needed
   }
 
   // Handle the 'tools/list' method from Inspector
@@ -259,27 +263,29 @@ export async function handleMcpRequest(
             description: 'Performs various management actions on notes or the server. This includes moving notes to trash, restoring them from trash, permanently deleting notes, retrieving server statistics, or resetting the local cache.',
             inputSchema: {
               type: 'object',
-              required: ['act'],
+              required: ['action'],
               properties: {
-                act: { 
+                action: { 
                   type: 'string', 
                   enum: ['trash', 'untrash', 'delete_permanently', 'get_stats', 'reset_cache'],
                   description: 'Action to perform'
                 },
-                id: { type: 'string', description: 'Note ID for note actions' }
+                id: { type: 'string', description: 'Note ID for note actions' },
+                local_version: { type: 'integer', description: 'Local version, required for note actions' }
               }
             },
             schema: {
               params: {
                 type: 'object',
-                required: ['act'],
+                required: ['action'],
                 properties: {
-                  act: { 
+                  action: { 
                     type: 'string', 
                     enum: ['trash', 'untrash', 'delete_permanently', 'get_stats', 'reset_cache'],
                     description: 'Action to perform'
                   },
-                  id: { type: 'string', description: 'Note ID for note actions' }
+                  id: { type: 'string', description: 'Note ID for note actions' },
+                  local_version: { type: 'integer', description: 'Local version, required for note actions' }
                 }
               }
             }

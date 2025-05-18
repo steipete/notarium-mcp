@@ -299,15 +299,15 @@ export class BackendSyncService {
         logger.warn(
           `Note ${noteId} version ${serverVersion} not found on server (404 via getNoteContent). Marking as potentially hard deleted.`,
         );
-        const localNoteObj = queryFirstRowObject<{ l_ver: number }>(
+        const localNoteObj = queryFirstRowObject<{ local_version: number }>(
           this.db,
-          'SELECT l_ver FROM notes WHERE id = ?',
+          'SELECT local_version FROM notes WHERE id = ?',
           [noteId],
         );
         const localNote = localNoteObj ?? undefined;
         if (localNote) {
           this.db
-            .prepare('UPDATE notes SET trash = 1, sync_deleted = 1, l_ver = l_ver + 1 WHERE id = ?')
+            .prepare('UPDATE notes SET trash = 1, sync_deleted = 1, local_version = local_version + 1 WHERE id = ?')
             .run([noteId]);
         }
       } else {
@@ -328,21 +328,21 @@ export class BackendSyncService {
     simperiumNoteData: SimperiumNoteResponseData['data'],
   ): Promise<void> {
     logger.debug(`Processing data for note ID: ${noteId}, server version: ${serverVersion}`);
-    const localNoteRow = queryFirstRowObject<{ l_ver: number; s_ver?: number | null; trash: number }>(
+    const localNoteRow = queryFirstRowObject<{ local_version: number; server_version?: number | null; trash: number }>(
       this.db,
-      'SELECT l_ver, s_ver, trash FROM notes WHERE id = ?',
+      'SELECT local_version, server_version, trash FROM notes WHERE id = ?',
       [noteId],
     );
     const localNote = localNoteRow
-      ? { ...localNoteRow, s_ver: localNoteRow.s_ver === null ? undefined : localNoteRow.s_ver }
+      ? { ...localNoteRow, server_version: localNoteRow.server_version === null ? undefined : localNoteRow.server_version }
       : undefined;
 
     // Server-wins conflict resolution (Spec 8.4)
-    // Compare with local s_ver if note exists locally
+    // Compare with local server_version if note exists locally
     if (
       !localNote ||
-      (localNote.s_ver !== undefined && localNote.s_ver < serverVersion) ||
-      localNote.s_ver === undefined
+      (localNote.server_version !== undefined && localNote.server_version < serverVersion) ||
+      localNote.server_version === undefined
     ) {
       // Note is new, or server version is newer
       if (simperiumNoteData.deleted) {
@@ -350,7 +350,7 @@ export class BackendSyncService {
         if (localNote) {
           this.db
             .prepare(
-              'UPDATE notes SET trash = 1, s_ver = ?, l_ver = l_ver + 1, sync_deleted = 1 WHERE id = ?',
+              'UPDATE notes SET trash = 1, server_version = ?, local_version = local_version + 1, sync_deleted = 1 WHERE id = ?',
             )
             .run([serverVersion, noteId]);
           logger.info(`Marked local note ${noteId} as trashed due to server delete flag.`);
@@ -362,8 +362,8 @@ export class BackendSyncService {
       } else {
         const noteContent = simperiumNoteData.content || '';
         const tags = JSON.stringify(simperiumNoteData.tags || []);
-        const mod_at = simperiumNoteData.modificationDate || Date.now() / 1000;
-        const crt_at = simperiumNoteData.creationDate || mod_at;
+        const modified_at = simperiumNoteData.modificationDate || Date.now() / 1000;
+        const created_at = simperiumNoteData.creationDate || modified_at;
 
         // UNCONDITIONAL SIMPLIFIED LOGGING (Pino - keep for comparison if console.error works)
         logger.info({
@@ -377,8 +377,8 @@ export class BackendSyncService {
 
         this.db
           .prepare(
-            `INSERT OR REPLACE INTO notes (id, l_ver, s_ver, txt, tags, mod_at, crt_at, trash, sync_deleted)
-           VALUES (?, COALESCE((SELECT l_ver FROM notes WHERE id = ?), 0) + 1, ?, ?, ?, ?, ?, ?, 0)`,
+            `INSERT OR REPLACE INTO notes (id, local_version, server_version, text, tags, modified_at, created_at, trash, sync_deleted)
+           VALUES (?, COALESCE((SELECT local_version FROM notes WHERE id = ?), 0) + 1, ?, ?, ?, ?, ?, ?, 0)`,
           )
           .run([
             noteId,
@@ -386,19 +386,19 @@ export class BackendSyncService {
             serverVersion,
             noteContent,
             tags,
-            mod_at,
-            crt_at,
+            modified_at,
+            created_at,
             simperiumNoteData.deleted ? 1 : 0,
           ]);
         logger.info(`Upserted note ${noteId} (server version ${serverVersion}) into local cache.`);
       }
-    } else if (localNote.s_ver && localNote.s_ver > serverVersion) {
+    } else if (localNote.server_version && localNote.server_version > serverVersion) {
       logger.warn(
-        `Local note ${noteId} has a newer server version (s_ver ${localNote.s_ver}) than received from server (s_ver ${serverVersion}). This is unusual. Local cache preserved.`,
+        `Local note ${noteId} has a newer server version (server_version ${localNote.server_version}) than received from server (server_version ${serverVersion}). This is unusual. Local cache preserved.`,
       );
     } else {
       logger.debug(
-        `Note ${noteId} is already up-to-date (s_ver ${serverVersion}). No action needed.`,
+        `Note ${noteId} is already up-to-date (server_version ${serverVersion}). No action needed.`,
       );
     }
   }

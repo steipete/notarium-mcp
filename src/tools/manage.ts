@@ -19,21 +19,22 @@ import {
   NotariumInternalError,
 } from '../errors.js';
 import fs from 'fs';
-import path from 'path';
+// import path from 'path'; // path might become unused, will check
 import { z } from 'zod';
 import {
-  getSimperiumApiClient,
+  // getSimperiumApiClient, // This was commented out in original snippet
   saveNote as simperiumSaveNote,
   SimperiumNotePayload,
 } from '../backend/simperium-api.js';
+import { cacheFilePath } from '../cache/sqlite.js'; // Import the correct path function
 
-// Helper function to get DB file path (similar to one in cache/sqlite.ts, consider centralizing)
-function getDbFilePathInternal(): string {
-  const dbFileName = appConfig.DB_ENCRYPTION_KEY
-    ? 'notarium_cache.sqlite.encrypted'
-    : 'notarium_cache.sqlite';
-  return path.resolve(process.cwd(), dbFileName);
-}
+// Helper function to get DB file path - REMOVED
+// function getDbFilePathInternal(): string {
+//   const dbFileName = appConfig.DB_ENCRYPTION_KEY
+//     ? 'notarium_cache.sqlite.encrypted'
+//     : 'notarium_cache.sqlite';
+//   return path.resolve(process.cwd(), dbFileName);
+// }
 
 function deleteDatabaseFilesInternal(dbFilePath: string): void {
   logger.info(`MANAGE TOOL: Deleting database files associated with ${dbFilePath}`);
@@ -64,29 +65,43 @@ export async function handleManage(
 ): Promise<ManageOutput> {
   logger.debug({ params }, 'Handling manage tool request');
 
-  switch (params.act) {
+  switch (params.action) {
     case 'get_stats': {
       try {
-        const dbFileSize = fs.statSync(getDbFilePathInternal()).size;
-        const dbTotalNotes = (
-          db.prepare('SELECT COUNT(*) as count FROM notes').get() as { count: number }
-        ).count;
-        const lastSuccessfulSyncAtRow = db
-          .prepare("SELECT value FROM sync_metadata WHERE key = 'last_successful_sync_at'")
-          .get() as { value: string } | undefined;
-        const lastSyncDurationMsRow = db
-          .prepare("SELECT value FROM sync_metadata WHERE key = 'last_sync_duration_ms'")
-          .get() as { value: string } | undefined;
-        const lastSyncStatusRow = db
-          .prepare("SELECT value FROM sync_metadata WHERE key = 'last_sync_status'")
-          .get() as { value: string } | undefined;
-        const syncErrorCountRow = db
-          .prepare("SELECT value FROM sync_metadata WHERE key = 'sync_error_count'")
-          .get() as { value: string } | undefined;
-        const backendCursorRow = db
-          .prepare("SELECT value FROM sync_metadata WHERE key = 'backend_cursor'")
-          .get() as { value: string } | undefined;
-        const dbSchemaVersion = db.pragma('user_version', { simple: true }) as number;
+        const dbFilePathResolved = cacheFilePath(); // Use the correct path function
+        const dbFileSize = fs.statSync(dbFilePathResolved).size;
+        
+        let dbTotalNotes = 0;
+        const countStmt = db.prepare('SELECT COUNT(*) as count FROM notes');
+        if (countStmt.step()) {
+          const row = countStmt.getAsObject() as { count: number };
+          dbTotalNotes = row.count;
+        }
+        countStmt.free();
+
+        const getMetaValue = (key: string): string | undefined => {
+          const stmt = db.prepare("SELECT value FROM sync_metadata WHERE key = :key");
+          stmt.bind({ ':key': key });
+          let value: string | undefined;
+          if (stmt.step()) {
+            const row = stmt.getAsObject() as { value: string };
+            value = row.value;
+          }
+          stmt.free();
+          return value;
+        };
+
+        const lastSuccessfulSyncAtRow = getMetaValue('last_successful_sync_at');
+        const lastSyncDurationMsRow = getMetaValue('last_sync_duration_ms');
+        const lastSyncStatusRow = getMetaValue('last_sync_status');
+        const syncErrorCountRow = getMetaValue('sync_error_count');
+        const backendCursorRow = getMetaValue('backend_cursor');
+        
+        let db_schema_version_val = 0;
+        const versionQueryRes = db.exec("PRAGMA user_version");
+        if (versionQueryRes.length > 0 && versionQueryRes[0].values.length > 0) {
+            db_schema_version_val = versionQueryRes[0].values[0][0] as number;
+        }
 
         const stats: z.infer<typeof ServerStatsSchema> = {
           mcp_notarium_version: currentConfig.MCP_NOTARIUM_VERSION,
@@ -96,17 +111,17 @@ export async function handleManage(
           db_file_size_mb: Math.round((dbFileSize / (1024 * 1024)) * 100) / 100, // MB with 2 decimal places
           db_total_notes: dbTotalNotes,
           db_last_sync_at: lastSuccessfulSyncAtRow
-            ? parseFloat(lastSuccessfulSyncAtRow.value)
+            ? parseInt(lastSuccessfulSyncAtRow, 10)
             : null,
           db_sync_duration_ms: lastSyncDurationMsRow
-            ? parseInt(lastSyncDurationMsRow.value, 10)
+            ? parseInt(lastSyncDurationMsRow, 10)
             : undefined,
-          db_sync_status: lastSyncStatusRow?.value || syncService.getSyncStats().lastSyncStatus, // Fallback to live service status
+          db_sync_status: lastSyncStatusRow || syncService.getSyncStats().lastSyncStatus, // Fallback to live service status
           db_sync_error_count: syncErrorCountRow
-            ? parseInt(syncErrorCountRow.value, 10)
+            ? parseInt(syncErrorCountRow, 10)
             : syncService.getSyncStats().consecutiveErrorCount,
-          db_schema_version: dbSchemaVersion,
-          backend_cursor: backendCursorRow?.value || null,
+          db_schema_version: db_schema_version_val,
+          backend_cursor: backendCursorRow || null,
         };
         return ManageGetStatsOutputSchema.parse(stats);
       } catch (err) {
@@ -123,16 +138,12 @@ export async function handleManage(
     case 'reset_cache': {
       logger.warn('Manage tool: reset_cache action invoked. This will delete the local database.');
       try {
-        // 1. Close the database connection if open (from the main cache module perspective)
-        //    This is tricky as this tool handler receives the DB instance.
-        //    The ideal way is to signal the main cache module to close and delete.
-        //    For now, we close the passed instance and delete files directly.
-        if (db.open) {
-          db.close();
-          logger.info('MANAGE TOOL: Closed DB connection before reset.');
-        }
-        // 2. Delete database files
-        deleteDatabaseFilesInternal(getDbFilePathInternal());
+        // For sql.js, db.close() makes the instance unusable. We don't check db.open.
+        // The main cache module is responsible for re-initializing if needed.
+        db.close(); 
+        logger.info('MANAGE TOOL: Closed DB connection before reset.');
+        
+        deleteDatabaseFilesInternal(cacheFilePath()); // Use the correct path function
         // 3. Set global.fullResyncRequiredByReset = true (as per spec 10.4)
         (global as any).fullResyncRequiredByReset = true;
         logger.info(
@@ -160,37 +171,39 @@ export async function handleManage(
     // Note actions: trash, untrash, delete_permanently
     case 'trash':
     case 'untrash': {
-      const { id: noteIdToToggleTrash, l_ver: noteLverToToggle } = params as ManageInput & {
-        act: 'trash' | 'untrash';
-      }; // Type assertion
+      const { id: noteIdToToggleTrash, local_version: noteLverToToggle } = params as ManageInput & {
+        action: 'trash' | 'untrash';
+      };
       if (!noteIdToToggleTrash || noteLverToToggle === undefined) {
         throw new NotariumValidationError(
-          'Note ID and l_ver are required for trash/untrash actions.',
+          'Note ID and local_version are required for trash/untrash actions.',
           'Note ID or version missing for trash/untrash.',
         );
       }
 
-      const noteToToggle = db
-        .prepare('SELECT * FROM notes WHERE id = ? AND l_ver = ?')
-        .get(noteIdToToggleTrash, noteLverToToggle) as any;
+      let noteToToggle: any;
+      const stmtGetNote = db.prepare('SELECT * FROM notes WHERE id = :id AND local_version = :l_ver');
+      stmtGetNote.bind({ ':id': noteIdToToggleTrash, ':l_ver': noteLverToToggle });
+      if (stmtGetNote.step()) {
+        noteToToggle = stmtGetNote.getAsObject();
+      }
+      stmtGetNote.free();
+
       if (!noteToToggle) {
         throw new NotariumResourceNotFoundError(
-          `Note with id '${noteIdToToggleTrash}' and version ${noteLverToToggle} not found for action '${params.act}'.`,
+          `Note with id '${noteIdToToggleTrash}' and version ${noteLverToToggle} not found for action '${params.action}'.`,
           'Note not found.',
         );
       }
 
-      const newTrashStatusFlag = params.act === 'trash';
+      const newTrashStatusFlag = params.action === 'trash';
       const now = Math.floor(Date.now() / 1000);
 
       const simperiumPayload: SimperiumNotePayload = {
-        // We must send the full content when updating via Simperium POST to /v/ endpoint, even if only changing metadata.
-        // If content is not sent, Simperium might interpret it as clearing the content.
         content: noteToToggle.txt,
-        tags: JSON.parse(noteToToggle.tags || '[]'), // Send existing tags
+        tags: JSON.parse(noteToToggle.tags || '[]'), 
         deleted: newTrashStatusFlag,
         modificationDate: now,
-        // creationDate should not be resent for updates typically
       };
 
       try {
@@ -198,33 +211,30 @@ export async function handleManage(
           SIMPERIUM_NOTE_BUCKET,
           noteIdToToggleTrash,
           simperiumPayload,
-          noteToToggle.s_ver === null ? undefined : noteToToggle.s_ver, // Use existing s_ver as baseVersion
+          noteToToggle.server_version === null ? undefined : noteToToggle.server_version, // Use existing server_version as baseVersion
         );
 
-        const newLocalVersionToggle = noteToToggle.l_ver + 1;
+        const newLocalVersionToggle = noteToToggle.local_version + 1;
         const newServerVersionToggle = savedSimperiumNote.version;
 
-        db.prepare('UPDATE notes SET trash = ?, s_ver = ?, l_ver = ? WHERE id = ?').run(
-          newTrashStatusFlag ? 1 : 0,
-          newServerVersionToggle,
-          newLocalVersionToggle,
-          noteIdToToggleTrash,
-        );
+        const stmtUpdate = db.prepare('UPDATE notes SET trash = :trash, server_version = :s_ver, local_version = :l_ver WHERE id = :id');
+        stmtUpdate.run({ ':trash': newTrashStatusFlag ? 1 : 0, ':s_ver': newServerVersionToggle, ':l_ver': newLocalVersionToggle, ':id': noteIdToToggleTrash });
+        stmtUpdate.free();
 
         logger.info(
-          `Note ${noteIdToToggleTrash} '${params.act}' processed. New s_ver: ${newServerVersionToggle}, new l_ver: ${newLocalVersionToggle}`,
+          `Note ${noteIdToToggleTrash} '${params.action}' processed. New server_version: ${newServerVersionToggle}, new local_version: ${newLocalVersionToggle}`,
         );
         return ManageNoteActionOutputSchema.parse({
           id: noteIdToToggleTrash,
-          status: params.act === 'trash' ? 'trashed' : 'untrashed',
-          new_l_ver: newLocalVersionToggle,
-          new_s_ver: newServerVersionToggle,
+          status: params.action === 'trash' ? 'trashed' : 'untrashed',
+          new_local_version: newLocalVersionToggle,
+          new_server_version: newServerVersionToggle,
         });
       } catch (error) {
         // Error handling similar to handleSave, specific to this action
         logger.error(
-          { err: error, noteId: noteIdToToggleTrash, action: params.act },
-          `Error during '${params.act}' action for note.`,
+          { err: error, noteId: noteIdToToggleTrash, action: params.action },
+          `Error during '${params.action}' action for note.`,
         );
         if (
           error instanceof NotariumBackendError ||
@@ -235,7 +245,7 @@ export async function handleManage(
           throw error;
         }
         throw new NotariumInternalError(
-          `Unexpected error during '${params.act}' for note ${noteIdToToggleTrash}.`,
+          `Unexpected error during '${params.action}' for note ${noteIdToToggleTrash}.`,
           'Internal server error processing note action.',
           undefined,
           error instanceof Error ? error : new Error(String(error)),
@@ -244,18 +254,23 @@ export async function handleManage(
     }
 
     case 'delete_permanently': {
-      const { id: noteIdToDelete, l_ver: noteLverToDelete } = params as ManageInput & {
-        act: 'delete_permanently';
-      }; // Type assertion
+      const { id: noteIdToDelete, local_version: noteLverToDelete } = params as ManageInput & {
+        action: 'delete_permanently';
+      };
       // V1: Local delete only, as per spec.
-      // Future: Could call a Simperium DELETE endpoint: await apiClient.delete(`i/${noteIdToDelete}/v/${noteToModify.s_ver}`)
+      // Future: Could call a Simperium DELETE endpoint: await apiClient.delete(`i/${noteIdToDelete}/v/${noteToModify.server_version}`)
       //         This would require careful handling of the response and ensuring the server actually hard deletes.
       logger.info(
         `Manage tool: delete_permanently action for note ${noteIdToDelete} (local delete only in V1).`,
       );
-      const noteToDelete = db
-        .prepare('SELECT id FROM notes WHERE id = ? AND l_ver = ?')
-        .get(noteIdToDelete, noteLverToDelete);
+      let noteToDelete: any;
+      const stmtGetDelNote = db.prepare('SELECT id FROM notes WHERE id = :id AND local_version = :l_ver');
+      stmtGetDelNote.bind({ ':id': noteIdToDelete, ':l_ver': noteLverToDelete });
+      if (stmtGetDelNote.step()) {
+        noteToDelete = stmtGetDelNote.getAsObject();
+      }
+      stmtGetDelNote.free();
+      
       if (!noteToDelete) {
         throw new NotariumResourceNotFoundError(
           `Note with id '${noteIdToDelete}' and version ${noteLverToDelete} not found for permanent deletion.`,
@@ -263,15 +278,21 @@ export async function handleManage(
         );
       }
       try {
-        db.transaction(() => {
-          db.prepare('DELETE FROM notes WHERE id = ?').run(noteIdToDelete);
-          db.prepare('DELETE FROM notes_fts WHERE id = ?').run(noteIdToDelete);
-        });
+        // For sql.js, transactions are managed by exec or multiple run statements if needed.
+        // Here we just run them sequentially.
+        const stmtDelNotes = db.prepare('DELETE FROM notes WHERE id = :id');
+        stmtDelNotes.run({ ':id': noteIdToDelete });
+        stmtDelNotes.free();
+
+        const stmtDelFts = db.prepare('DELETE FROM notes_fts WHERE id = :id');
+        stmtDelFts.run({ ':id': noteIdToDelete}); // Assuming notes_fts also uses 'id' as its link to notes.id
+        stmtDelFts.free();
+        
         logger.info(`Note ${noteIdToDelete} deleted permanently from local cache.`);
         return ManageNoteActionOutputSchema.parse({
           id: noteIdToDelete,
           status: 'deleted',
-          // No new_l_ver or new_s_ver as it\'s gone locally
+          // No new_local_version or new_server_version as it's gone locally
         });
       } catch (dbErr) {
         logger.error({ err: dbErr, id: noteIdToDelete }, 'DB error during permanent delete.');
@@ -285,11 +306,11 @@ export async function handleManage(
     }
 
     default:
-      // This should be caught by Zod union parsing if params.act is invalid.
+      // This should be caught by Zod union parsing if params.action is invalid.
       // But as a fallback:
       // const exhaustiveCheck: never = params; // Removed for now
       throw new NotariumValidationError(
-        `Invalid manage action: ${(params as any).act}`,
+        `Invalid manage action: ${(params as any).action}`,
         'Unknown management action specified.',
       );
   }

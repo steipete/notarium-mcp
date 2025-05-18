@@ -99,9 +99,8 @@ function queryFirstRow<T = Record<string, unknown>>(db: DB, sql: string, params:
 export async function handleSave(params: SaveInput, db: DB): Promise<SaveOutput> {
   logger.debug({ params }, 'Handling save tool request');
 
-  // Destructure params. Some will be reassigned (id, l_ver, s_ver), others are read-only for this initial block.
-  let { id, l_ver, s_ver } = params;
-  const { txt, txt_patch, tags, trash } = params; // These are effectively const in this scope
+  let { id, local_version, server_version } = params;
+  const { text, text_patch, tags, trash } = params;
 
   const isNewNote = !id;
   const now = Math.floor(Date.now() / 1000);
@@ -110,20 +109,20 @@ export async function handleSave(params: SaveInput, db: DB): Promise<SaveOutput>
   let currentText = '';
 
   if (!isNewNote && id) {
-    if (l_ver === undefined) {
+    if (local_version === undefined) {
       throw new NotariumValidationError(
-        'l_ver is required when updating an existing note (id is present).',
-        'Local version (l_ver) is missing for an existing note.',
+        'local_version is required when updating an existing note (id is present).',
+        'Local version (local_version) is missing for an existing note.',
       );
     }
     try {
       currentNote = queryFirstRow(
         db,
-        'SELECT * FROM notes WHERE id = ? AND l_ver = ?',
-        [id, l_ver],
+        'SELECT * FROM notes WHERE id = ? AND local_version = ?',
+        [id, local_version],
       );
     } catch (dbErr) {
-      logger.error({ err: dbErr, id, l_ver }, 'DB error fetching note for update.');
+      logger.error({ err: dbErr, id, local_version }, 'DB error fetching note for update.');
       throw new NotariumDbError(
         'Failed to retrieve note for update.',
         'Database error preparing to save note.',
@@ -133,22 +132,22 @@ export async function handleSave(params: SaveInput, db: DB): Promise<SaveOutput>
     }
     if (!currentNote) {
       throw new NotariumResourceNotFoundError(
-        `Note with id '${id}' and local version ${l_ver} not found for update.`,
+        `Note with id '${id}' and local version ${local_version} not found for update.`,
         'The note version you are trying to update does not exist.',
       );
     }
-    currentText = currentNote.txt;
-    s_ver = s_ver ?? (currentNote.s_ver === null ? undefined : currentNote.s_ver);
+    currentText = currentNote.text;
+    server_version = server_version ?? (currentNote.server_version === null ? undefined : currentNote.server_version);
   } else if (isNewNote) {
     id = uuidv4();
-    l_ver = 0;
-    // s_ver remains undefined for new notes, simperiumSaveNote handles this by omitting baseVersion
+    local_version = 0; 
+    // server_version remains undefined for new notes for simperiumSaveNote
   }
 
-  if (txt_patch && txt_patch.length > 0) {
-    currentText = applyTextPatch(currentText, txt_patch);
-  } else if (txt !== undefined) {
-    currentText = txt;
+  if (text_patch && text_patch.length > 0) {
+    currentText = applyTextPatch(currentText, text_patch);
+  } else if (text !== undefined) {
+    currentText = text;
   }
 
   const finalTags =
@@ -172,43 +171,43 @@ export async function handleSave(params: SaveInput, db: DB): Promise<SaveOutput>
       SIMPERIUM_NOTE_BUCKET,
       id!,
       simperiumPayload,
-      s_ver,
+      server_version, // Pass server_version (which could be undefined for new notes)
     );
 
     const newServerVersion = savedSimperiumNote.version;
-    const newLocalVersion = (currentNote?.l_ver || 0) + 1; // Increment local version
+    const newLocalVersion = (currentNote?.local_version || local_version || 0) + 1; 
 
     db.prepare(
-      `INSERT OR REPLACE INTO notes (id, l_ver, s_ver, txt, tags, mod_at, crt_at, trash, sync_deleted)
+      `INSERT OR REPLACE INTO notes (id, local_version, server_version, text, tags, modified_at, created_at, trash, sync_deleted)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run([
       id,
       newLocalVersion,
       newServerVersion,
-      currentText, // after patch
+      currentText, 
       JSON.stringify(finalTags),
       savedSimperiumNote.data.modificationDate || now,
       isNewNote
         ? savedSimperiumNote.data.creationDate || now
-        : currentNote?.crt_at === null
+        : currentNote?.created_at === null // Use DB created_at for existing notes
           ? undefined
-          : currentNote?.crt_at,
+          : currentNote?.created_at,
       savedSimperiumNote.data.deleted ? 1 : 0,
       0,
     ]);
 
     const resultNoteData = {
       id: id!,
-      l_ver: newLocalVersion,
-      s_ver: newServerVersion,
-      txt: currentText, // Reflect the content that was saved
+      local_version: newLocalVersion,
+      server_version: newServerVersion,
+      text: currentText,
       tags: savedSimperiumNote.data.tags || [],
-      mod_at: Math.floor(savedSimperiumNote.data.modificationDate || now), // Ensure integer
-      crt_at: isNewNote
-        ? Math.floor(savedSimperiumNote.data.creationDate || now) // Ensure integer
-        : currentNote?.crt_at === null
+      modified_at: Math.floor(savedSimperiumNote.data.modificationDate || now), // Map from Simperium field
+      created_at: isNewNote
+        ? Math.floor(savedSimperiumNote.data.creationDate || now) 
+        : currentNote?.created_at === null
           ? undefined
-          : Math.floor(currentNote?.crt_at), // Ensure integer if exists
+          : Math.floor(currentNote?.created_at), 
       trash: savedSimperiumNote.data.deleted || false,
     };
     return NoteDataSchema.parse(resultNoteData);

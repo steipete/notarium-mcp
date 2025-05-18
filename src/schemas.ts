@@ -16,28 +16,28 @@ export const NoteTagsSchema = z.array(NoteTagSchema).max(100, 'Too many tags'); 
 
 export const ListItemSchema = z.object({
   id: z.string().min(1),
-  l_ver: z.number().int(), // Local cache version of the note
+  local_version: z.number().int(), // Local cache version of the note
   title_prev: z.string().max(80),
   tags: NoteTagsSchema,
-  mod_at: UnixTimestampSchema, // Last modified timestamp (epoch seconds)
+  modified_at: UnixTimestampSchema, // Last modified timestamp (epoch seconds)
   trash: z.boolean(),
 });
 export type ListItem = z.infer<typeof ListItemSchema>;
 
 export const NoteDataSchema = z.object({
   id: z.string().min(1),
-  l_ver: z.number().int(), // Local cache version of the note
-  s_ver: z.number().int().optional(), // Server version of the note (from Simperium)
-  txt: z.string(),
+  local_version: z.number().int(), // Local cache version of the note
+  server_version: z.number().int().optional(), // Server version of the note (from Simperium)
+  text: z.string(),
   tags: NoteTagsSchema,
-  mod_at: UnixTimestampSchema, // Last modified timestamp (epoch seconds)
-  crt_at: UnixTimestampSchema.optional(), // Created timestamp (epoch seconds), might not always be available
+  modified_at: UnixTimestampSchema, // Last modified timestamp (epoch seconds)
+  created_at: UnixTimestampSchema.optional(), // Created timestamp (epoch seconds), might not always be available
   trash: z.boolean(),
   // For 'get' tool with ranges:
-  txt_partial: z.boolean().optional(),
-  txt_tot_ln: z.number().int().optional(),
-  rng_ln_s: z.number().int().positive().optional(), // 1-indexed start line of returned range
-  rng_ln_c: z.number().int().nonnegative().optional(), // count of lines in returned range
+  text_is_partial: z.boolean().optional(),
+  text_total_lines: z.number().int().optional(),
+  range_line_start: z.number().int().positive().optional(), // 1-indexed start line of returned range
+  range_line_count: z.number().int().nonnegative().optional(), // count of lines in returned range
 });
 export type NoteData = z.infer<typeof NoteDataSchema>;
 
@@ -46,7 +46,7 @@ export type NoteData = z.infer<typeof NoteDataSchema>;
 export const ListInputSchema = z.object({
   q: z.string().optional(),
   tags: z.array(NoteTagSchema).optional(),
-  lim: z.number().int().min(1).max(100).default(20),
+  limit: z.number().int().min(1).max(100).default(20),
   page: z.number().int().min(1).default(1),
   trash_s: z
     .union([
@@ -55,11 +55,11 @@ export const ListInputSchema = z.object({
       z.literal(2), // Either (include trash)
     ])
     .default(0), // 0: not in trash, 1: in trash, 2: either
-  dt_before: z
+  date_before: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Invalid date format, use YYYY-MM-DD')
     .optional(), // YYYY-MM-DD
-  dt_after: z
+  date_after: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Invalid date format, use YYYY-MM-DD')
     .optional(), // YYYY-MM-DD
@@ -79,9 +79,9 @@ export type ListOutput = z.infer<typeof ListOutputSchema>;
 // Spec 10.2. Tool `get`
 export const GetInputSchema = z.object({
   id: z.string().min(1),
-  l_ver: z.number().int().optional(), // Optional: request specific local version
-  rng_ln_s: z.number().int().min(1).optional(), // 1-indexed start line
-  rng_ln_c: z.number().int().min(0).optional(), // Number of lines to retrieve from start line (0 means to end of note)
+  local_version: z.number().int().optional(), // Optional: request specific local version
+  range_line_start: z.number().int().min(1).optional(), // 1-indexed start line
+  range_line_count: z.number().int().min(0).optional(), // Number of lines to retrieve from start line (0 means to end of note)
 });
 export type GetInput = z.infer<typeof GetInputSchema>;
 
@@ -109,31 +109,31 @@ export const PatchOperationSchema = PatchOperationObjectSchema.refine(
 
 const SaveInputObjectSchema = z.object({
   id: z.string().min(1).optional(), // Changed from .uuid(). If undefined, create new note
-  l_ver: z.number().int().optional(), // Required if id is present (updating existing note)
-  s_ver: z.number().int().optional(), // Expected server version (for conflict detection on server side)
-  txt: z.string().optional(),
-  txt_patch: z.array(PatchOperationSchema).optional(),
+  local_version: z.number().int().optional(), // Required if id is present (updating existing note)
+  server_version: z.number().int().optional(), // Expected server version (for conflict detection on server side)
+  text: z.string().optional(),
+  text_patch: z.array(PatchOperationSchema).optional(),
   tags: NoteTagsSchema.optional(), // If provided, replaces all existing tags
   trash: z.boolean().optional(), // Set trash status
 });
 
 export const SaveInputSchema = SaveInputObjectSchema.refine(
-  (data: z.infer<typeof SaveInputObjectSchema>) => !!data.txt || !!data.txt_patch,
+  (data: z.infer<typeof SaveInputObjectSchema>) => !!data.text || !!data.text_patch,
   {
-    message: "Either 'txt' or 'txt_patch' must be provided",
-    path: ['txt'], // or path: ['txt_patch']
+    message: "Either 'text' or 'text_patch' must be provided",
+    path: ['text'],
   },
 )
-  .refine((data: z.infer<typeof SaveInputObjectSchema>) => !(data.txt && data.txt_patch), {
-    message: "Cannot provide both 'txt' and 'txt_patch''",
-    path: ['txt'],
+  .refine((data: z.infer<typeof SaveInputObjectSchema>) => !(data.text && data.text_patch), {
+    message: "Cannot provide both 'text' and 'text_patch''",
+    path: ['text'],
   })
   .refine(
     (data: z.infer<typeof SaveInputObjectSchema>) =>
-      data.id ? typeof data.l_ver === 'number' : true,
+      data.id ? typeof data.local_version === 'number' : true,
     {
-      message: "'l_ver' is required when 'id' is provided (updating an existing note)",
-      path: ['l_ver'],
+      message: "'local_version' is required when 'id' is provided (updating an existing note)",
+      path: ['local_version'],
     },
   );
 export type SaveInput = z.infer<typeof SaveInputSchema>;
@@ -160,13 +160,13 @@ export const ServerStatsSchema = z.object({
 });
 export type ServerStats = z.infer<typeof ServerStatsSchema>;
 
-export const ManageGetStatsActionSchema = z.object({ act: z.literal('get_stats') });
-export const ManageResetCacheActionSchema = z.object({ act: z.literal('reset_cache') });
+export const ManageGetStatsActionSchema = z.object({ action: z.literal('get_stats') });
+export const ManageResetCacheActionSchema = z.object({ action: z.literal('reset_cache') });
 
 export const ManageNoteActionSchema = z.object({
-  act: z.enum(['trash', 'untrash', 'delete_permanently']),
+  action: z.enum(['trash', 'untrash', 'delete_permanently']),
   id: z.string().min(1),
-  l_ver: z.number().int(), // Mandatory for note actions
+  local_version: z.number().int(), // Mandatory for note actions
 });
 
 export const ManageInputSchema = z.union([
@@ -185,8 +185,8 @@ export const ManageResetCacheOutputSchema = z.object({
 export const ManageNoteActionOutputSchema = z.object({
   id: z.string().min(1),
   status: z.enum(['trashed', 'untrashed', 'deleted']),
-  new_l_ver: z.number().int().optional(), // if applicable, e.g. after a trash/untrash that Simperium confirms with new version
-  new_s_ver: z.number().int().optional(),
+  new_local_version: z.number().int().optional(), // if applicable, e.g. after a trash/untrash that Simperium confirms with new version
+  new_server_version: z.number().int().optional(),
 });
 
 export const ManageOutputSchema = z.union([
