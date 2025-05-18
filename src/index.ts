@@ -1,10 +1,11 @@
 // MCP Notarium Main Entry Point
 import { config, printConfigVars, validateConfig } from './config.js';
 import logger from './logging.js';
-import type { Database as DB } from 'better-sqlite3'; // Added DB type import
-import { initializeCache, closeCache } from './cache/sqlite.js';
-import { BackendSyncService } from './sync/sync-service.js';
-import { startMcpServer } from './mcp-core/server.js';
+// import { runSqliteLoadTest } from './cache/sqlite.js';
+import { initializeCache, closeCache, getDB } from './cache/sqlite.js'; // Comment out for test
+import type { DB } from './cache/sqlite.js'; // Keep type import if used elsewhere - NOW COMMENTED FOR TEST
+import { BackendSyncService } from './sync/sync-service.js'; // Keep commented for now
+import { startMcpServer } from './mcp-core/server.js'; // Keep commented for now
 
 let db: DB | undefined;
 let syncService: BackendSyncService | undefined;
@@ -54,66 +55,40 @@ Options:
   logger.info(`Log level set to: ${config.LOG_LEVEL}`);
 
   try {
-    // 1. Initialize Cache
-    db = await initializeCache();
-    logger.info('Local cache initialized successfully.');
+    db = await initializeCache(); // Initialize cache, get DB instance
+    logger.info('Database cache initialized successfully.');
 
-    // 2. Initialize Backend API Client (done implicitly by its first use or a dedicated init if needed)
-    //    getSimperiumApiClient() in simperium-api.ts handles this.
-    logger.info('Backend API client will be initialized on first use.');
-
-    // 3. Start Backend Sync Service
-    syncService = new BackendSyncService();
-    syncService.start();
+    // Initialize and start the sync service after DB is ready
+    syncService = new BackendSyncService(); // Relies on getDB() being callable
+    syncService.start(); // Start background sync
     logger.info('Backend sync service started.');
 
-    // 4. Start MCP Server
-    if (!db || !syncService) {
-      // Type guard, though db should be defined after initializeCache
-      throw new Error('DB or SyncService not initialized before starting MCP Server');
-    }
-    await startMcpServer(db, syncService);
+    // Start the MCP server, passing the DB instance
+    startMcpServer(getDB(), syncService); // Relies on getDB()
 
-    // The process will be kept alive by the MCP server or sync service intervals.
-    // No explicit keep-alive setInterval needed here.
-    logger.info('MCP Notarium main components initialized and started.');
   } catch (error) {
-    logger.fatal({ err: error }, 'Critical error during MCP Notarium startup.');
-    // Attempt graceful shutdown even on startup error
-    await handleShutdown('STARTUP_ERROR').catch((shutdownErr) => {
-      logger.error({ err: shutdownErr }, 'Error during shutdown attempt after startup failure.');
-    });
+    logger.fatal({ err: error }, 'Failed to initialize database or start services. Exiting.');
     process.exit(1);
   }
 }
 
-async function handleShutdown(signal: string) {
+function gracefulShutdown(signal: string) {
   logger.info(`Received ${signal}. Shutting down gracefully...`);
-  try {
-    if (syncService) {
-      logger.info('Stopping backend sync service...');
-      await syncService.stop();
-      logger.info('Backend sync service stopped.');
+  if (db) {
+    try {
+      closeCache();
+      logger.info('Database cache closed.');
+    } catch (err) {
+      logger.error({ err }, 'Error closing database cache during shutdown.');
     }
-    // MCP Server shutdown would be handled here if it had an explicit stop method
-    // For stdio-based servers, closing stdin or the process itself might be enough.
-
-    if (db) {
-      // db might not be initialized if startup failed very early
-      logger.info('Closing database connection...');
-      await closeCache(); // closeCache is defined in sqlite.ts
-      logger.info('Database connection closed.');
-    }
-    logger.info('MCP Notarium shut down complete.');
-    process.exit(0);
-  } catch (error) {
-    logger.error({ err: error }, 'Error during graceful shutdown.');
-    process.exit(1); // Exit with error if shutdown fails
   }
+
+  logger.info('MCP Notarium server shut down complete.');
+  process.exit(0);
 }
 
-process.on('SIGINT', () => handleShutdown('SIGINT'));
-process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 main().catch((err) => {
   // This catch is for unhandled errors specifically from the main() promise chain itself,
