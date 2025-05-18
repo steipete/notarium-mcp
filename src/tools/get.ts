@@ -52,7 +52,8 @@ export async function handleGet(params: GetInput, db: DB): Promise<GetOutput> {
   };
 
   if (range_line_start !== undefined && range_line_count !== undefined) {
-    const lines = (noteRow.text as string).split('\n');
+    const noteText = noteRow.text === null || noteRow.text === undefined ? '' : String(noteRow.text);
+    const lines = noteText.split('\n');
     const totalLines = lines.length;
     fullNoteData.text_total_lines = totalLines;
     fullNoteData.text_is_partial = true;
@@ -76,7 +77,8 @@ export async function handleGet(params: GetInput, db: DB): Promise<GetOutput> {
     }
   } else {
     fullNoteData.text_is_partial = false;
-    fullNoteData.text_total_lines = (noteRow.text as string).split('\n').length;
+    const noteText = noteRow.text === null || noteRow.text === undefined ? '' : String(noteRow.text);
+    fullNoteData.text_total_lines = noteText.split('\n').length;
   }
 
   try {

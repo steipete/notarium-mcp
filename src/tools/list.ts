@@ -149,14 +149,49 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
 
   // 11. Data Query (Spec 10.1.Server Logic.11)
   const offset = (page - 1) * limit;
-  const dataSql = `SELECT notes.id, notes.local_version, notes.text, notes.tags, notes.modified_at, notes.trash FROM notes WHERE ${whereClause} ORDER BY ${orderBySQL} LIMIT ? OFFSET ?;`;
-  const finalSqlParams = [...sqlParams, limit, offset];
+  let dataSql;
+  let finalSqlParamsForData;
+
+  if (remaining_query_text) {
+    // FTS Query using CTE for ranking
+    // 1. Original sqlParams are for the clauses in sqlWhereClauses. The last one is the ftsQuery if FTS is active.
+    // The FTS condition notes.rowid IN (...) needs to be removed from sqlWhereClauses for this CTE approach.
+    
+    const nonFtsWhereClauses = sqlWhereClauses.filter(clause => !clause.startsWith('notes.rowid IN (SELECT rowid FROM notes_fts'));
+    const nonFtsWhereClauseString = nonFtsWhereClauses.length > 0 ? nonFtsWhereClauses.join(' AND ') : '1=1';
+    
+    // Params for non-FTS clauses (all except the last one, which is ftsQuery)
+    const nonFtsParams = sqlParams.slice(0, -1);
+    const ftsQueryParam = sqlParams[sqlParams.length - 1]; // This is the ftsQuery
+
+    orderBySQL = `ranked.rank, ${resolvedSortField} ${resolvedSortOrder}`; // Order by rank from CTE
+
+    dataSql = `WITH ranked_notes AS (
+                 SELECT rowid, rank
+                 FROM notes_fts
+                 WHERE notes_fts.text MATCH ?
+               )
+               SELECT n.id, n.local_version, n.text, n.tags, n.modified_at, n.trash
+               FROM notes AS n
+               JOIN ranked_notes AS ranked ON n.rowid = ranked.rowid
+               WHERE ${nonFtsWhereClauseString} 
+               ORDER BY ${orderBySQL} 
+               LIMIT ? OFFSET ?;`;
+    finalSqlParamsForData = [ftsQueryParam, ...nonFtsParams, limit, offset];
+
+  } else {
+    // Non-FTS Query
+    dataSql = `SELECT notes.id, notes.local_version, notes.text, notes.tags, notes.modified_at, notes.trash 
+               FROM notes 
+               WHERE ${whereClause} ORDER BY ${orderBySQL} LIMIT ? OFFSET ?;`;
+    finalSqlParamsForData = [...sqlParams, limit, offset];
+  }
 
   let rows: any[];
   try {
     // sql.js compatible data query
     const stmtData = db.prepare(dataSql);
-    stmtData.bind(finalSqlParams);
+    stmtData.bind(finalSqlParamsForData);
     rows = [];
     while (stmtData.step()) {
       rows.push(stmtData.getAsObject());
@@ -164,7 +199,7 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
     stmtData.free();
   } catch (err) {
     logger.error(
-      { err, sql: dataSql, params: finalSqlParams },
+      { err, sql: dataSql, params: finalSqlParamsForData },
       'Error executing data query in list tool',
     );
     throw new NotariumDbError(
