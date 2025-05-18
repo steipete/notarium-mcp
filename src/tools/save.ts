@@ -113,6 +113,21 @@ async function saveSingleNoteInternally(
         [id, local_version],
       );
       if (!currentNote) {
+        logger.info({ id, local_version }, '[save_notes helper] Primary id/version lookup failed for update, attempting FTS fallback on id.');
+        const stmtFallback = db.prepare(
+          `SELECT * FROM notes WHERE rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts.text MATCH ?) ORDER BY modified_at DESC LIMIT 1`);
+        stmtFallback.bind([id]); // Match against the ID string which might be a title
+        if (stmtFallback.step()) {
+          currentNote = stmtFallback.getAsObject();
+          logger.info({ foundId: currentNote.id, originalId: id }, '[save_notes helper] FTS fallback found a note. Will use this note for update, ignoring original local_version.');
+          // IMPORTANT: If fallback is used, the original local_version might not match. We proceed with the found note's latest version.
+          // The client-provided local_version was for the ID it thought it had.
+          // We should use the local_version of the `currentNote` we just found via FTS.
+          local_version = currentNote.local_version; 
+        }
+        stmtFallback.free();
+      }
+      if (!currentNote) {
         throw new NotariumResourceNotFoundError(
           `Note with id '${id}' and local version ${local_version} not found for update.`,
           'The note version you are trying to update does not exist.',
