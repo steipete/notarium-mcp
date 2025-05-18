@@ -13,7 +13,7 @@ import { handleManage } from '../tools/manage.js';
 import * as toolImplementations from '../tools/index.js';
 
 // MCP protocol version supported by this server
-const SUPPORTED_PROTOCOL_VERSION = "2025-03-26";
+const SUPPORTED_PROTOCOL_VERSION = "2024-11-05";
 
 // This is a conceptual MCP request structure. The actual structure depends on the chosen MCP library.
 interface McpRequest {
@@ -133,7 +133,7 @@ export async function handleMcpRequest(
       result: {
         tools: [
           {
-            name: 'mcp_notarium.list_notes',
+            name: 'list_notes',
             title: 'List notes',
             description: 'Lists notes, allowing for filtering by IDs, modification date, and tags. Supports pagination to handle large sets of notes.',
             inputSchema: {
@@ -158,7 +158,7 @@ export async function handleMcpRequest(
             }
           },
           {
-            name: 'mcp_notarium.get_note',
+            name: 'get_note',
             title: 'Get note',
             description: 'Retrieves a specific note by its unique ID. Can also fetch a particular version of the note or a specific range of lines within the note.',
             inputSchema: {
@@ -185,7 +185,7 @@ export async function handleMcpRequest(
             }
           },
           {
-            name: 'mcp_notarium.save_note',
+            name: 'save_note',
             title: 'Save note',
             description: 'Saves a note. This can be used to create a new note or update an existing one. Supports providing full text content or line-based patches for efficient updates.',
             inputSchema: {
@@ -208,7 +208,7 @@ export async function handleMcpRequest(
             }
           },
           {
-            name: 'mcp_notarium.manage_notes',
+            name: 'manage_notes',
             title: 'Manage notes',
             description: 'Performs various management actions on notes or the server. This includes moving notes to trash, restoring them from trash, permanently deleting notes, retrieving server statistics, or resetting the local cache.',
             inputSchema: {
@@ -256,34 +256,22 @@ export async function handleMcpRequest(
       };
     }
 
-    const toolName = params.name; // e.g., "mcp_notarium.list_notes"
-    const methodParts = toolName.split('.');
-
-    if (methodParts.length < 2 || methodParts[0] !== MCP_SERVICE_NAME) {
-      logger.warn({ toolName, MCP_SERVICE_NAME }, 'Invalid tool name format or service name mismatch');
-      return {
-        jsonrpc: '2.0',
-        id,
-        error: { code: -32602, message: `Invalid method parameters: Invalid tool name format or service mismatch. Expected prefix ${MCP_SERVICE_NAME}.` }
-      };
-    }
-
-    const actualMethodNameFromMcp = methodParts[1]; // This will be "list_notes"
-    const toolImplementation = (toolImplementations as any)[actualMethodNameFromMcp];
+    const actualMethodKey = params.name; // e.g., "list_notes", "get_note"
+    const toolImplementation = (toolImplementations as any)[actualMethodKey];
 
     if (typeof toolImplementation === 'function') {
       try {
-        logger.info({ toolName: actualMethodNameFromMcp, params: params.arguments }, 'Dispatching to tool');
+        logger.info({ toolName: actualMethodKey, params: params.arguments }, 'Dispatching to tool');
         // Pass params.arguments as the arguments to the actual tool function
         // Different tools have different signatures, handle accordingly
         let result;
-        if (actualMethodNameFromMcp === 'manage_notes') {
+        if (actualMethodKey === 'manage_notes') {
           result = await toolImplementation(params.arguments || {}, db, syncService, config);
         } else {
           result = await toolImplementation(params.arguments || {}, db);
         } 
         logger.info({ 
-          toolName: actualMethodNameFromMcp, 
+          toolName: actualMethodKey, 
           responseId: id,
           hasResult: !!result
         }, 'Sending tools/call response');
@@ -293,7 +281,7 @@ export async function handleMcpRequest(
           result,
         };
       } catch (error: any) {
-        logger.error({ err: error, toolName: actualMethodNameFromMcp }, 'Error executing tool');
+        logger.error({ err: error, toolName: actualMethodKey }, 'Error executing tool');
         return {
           jsonrpc: '2.0',
           id,
@@ -301,11 +289,11 @@ export async function handleMcpRequest(
         };
       }
     } else {
-      logger.warn({ toolName, actualMethodNameFromMcp, available: Object.keys(toolImplementations) }, 'Method not found in toolImplementations');
+      logger.warn({ toolNameFromMcp: actualMethodKey, available: Object.keys(toolImplementations) }, 'Method not found in toolImplementations');
       return {
         jsonrpc: '2.0',
         id,
-        error: { code: -32601, message: `Method not found: ${toolName}. Could not map to a valid internal method. Available methods: ${Object.keys(toolImplementations).join(', ')}` },
+        error: { code: -32601, message: `Method not found: ${actualMethodKey}. Available methods: ${Object.keys(toolImplementations).join(', ')}` },
       };
     }
   } else {
