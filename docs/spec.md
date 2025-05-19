@@ -299,6 +299,11 @@ Okay, this is the definitive, ultra-detailed "one-shot" specification for MCP No
         *   Handles string `trash_status` (`'active'`, `'trashed'`, `'any'`) for SQL conditions. (Default: `'active'`)
         *   `preview_lines` input (Default: 3, Min: 1, Max: 20) controls number of lines in `ListItemSchema.text`.
         *   Calculates and includes `number_of_lines` (total lines of original note) in each `ListItemSchema`.
+        *   **Sorting:** 
+            *   Results are sorted based on `sort_by` and `sort_order` parameters.
+            *   `sort_by` defaults to `modified_at`. Allowed values: `modified_at`, `created_at`.
+            *   `sort_order` defaults to `DESC`. Allowed values: `ASC`, `DESC`.
+            *   If a full-text search `query` is provided, results are primarily sorted by relevance (FTS rank). The `sort_by` and `sort_order` parameters are then applied as a secondary sorting criterion.
     *   **Output**: `ListOutputSchema`.
 *   **10.2. Tool: `get_notes`**
     *   **Input**: `GetNotesInputSchema`. Accepts single `id` string or an array of up to 20 `id` strings.
