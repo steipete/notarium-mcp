@@ -1,0 +1,147 @@
+/*
+ * dump_window_text_ax.jxa ─────────────────────────────────────────────
+ * Harvest all human-visible text from the front-most window of an app
+ * (defaults to Claude Desktop) using the low-level AX API via ObjC bridge.
+ * This aims for much faster extraction than System Events for deep UIs.
+ *
+ *  • Usage
+ *      osascript -l JavaScript dump_window_text_ax.jxa               # Claude
+ *      osascript -l JavaScript dump_window_text_ax.jxa com.apple.TextEdit
+ */
+
+ObjC.import('ApplicationServices'); // For AX API
+ObjC.import('AppKit'); // For NSWorkspace, NSRunningApplication
+
+// Helper to convert CFStringRef to JS string, or return null
+function cfStringToString(cfStr) {
+  if (cfStr === null || cfStr === undefined || $.CFGetTypeID(cfStr) !== $.CFStringGetTypeID()) {
+    return null;
+  }
+  return ObjC.unwrap(cfStr);
+}
+
+const MAX_DEPTH = 50;
+const CHROME_RE = /^(close|full screen|minimize) button$/i;
+
+// Attributes we want to fetch for each element
+// This will be a global that needs cleanup
+let cfAttrArrayForAXFetch = null;
+
+function initializeGlobalAttributes() {
+    if (cfAttrArrayForAXFetch === null) {
+        const attrList = [
+            $.kAXValueAttribute,
+            $.kAXTitleAttribute,
+            $.kAXDescriptionAttribute,
+            $.kAXHelpAttribute
+        ];
+        const tempList = $.CFArrayCreate($.kCFAllocatorDefault, attrList, attrList.length, Ref());
+        if (tempList === null) throw new Error("Failed to create CFArray for attributes");
+        cfAttrArrayForAXFetch = tempList;
+    }
+}
+
+function releaseGlobalAttributes() {
+    if (cfAttrArrayForAXFetch !== null) {
+        $.CFRelease(cfAttrArrayForAXFetch);
+        cfAttrArrayForAXFetch = null;
+    }
+}
+
+function maybeAdd(outArr, value) {
+  const s = cfStringToString(value);
+  if (!s) return;
+  const t = s.trim();
+  if (!t.length || CHROME_RE.test(t)) return;
+  outArr.push(t);
+}
+
+function harvestAX(axElement, depth = 0) {
+  if (depth > MAX_DEPTH || axElement === null || axElement === undefined) return [];
+  let out = [];
+  let fetchedValues = Ref();
+
+  const err = $.AXUIElementCopyMultipleAttributeValues(
+    axElement,
+    cfAttrArrayForAXFetch, // Use the global ref
+    fetchedValues
+  );
+
+  if (err === $.kAXErrorSuccess && fetchedValues[0] !== null && fetchedValues[0] !== undefined) {
+    const valuesArray = ObjC.deepUnwrap(fetchedValues[0]);
+    if (Array.isArray(valuesArray)) {
+      valuesArray.forEach(val => maybeAdd(out, val));
+    }
+    $.CFRelease(fetchedValues[0]);
+  }
+
+  let childrenRef = Ref();
+  const childrenErr = $.AXUIElementCopyAttributeValue(axElement, $.kAXChildrenAttribute, childrenRef);
+
+  if (childrenErr === $.kAXErrorSuccess && childrenRef[0] !== null && childrenRef[0] !== undefined) {
+    const childrenArray = ObjC.deepUnwrap(childrenRef[0]);
+    if (Array.isArray(childrenArray)) {
+      childrenArray.forEach(childAXElement => {
+        if (childAXElement) {
+           out = out.concat(harvestAX(childAXElement, depth + 1));
+        }
+      });
+    }
+    $.CFRelease(childrenRef[0]);
+  }
+  return out;
+}
+
+function run(argvRaw) {
+  // When run via scriptContent by the tool, argvRaw might be undefined or not an array.
+  // When run as a file, osascript passes an array.
+  const argv = Array.isArray(argvRaw) ? argvRaw : [];
+  initializeGlobalAttributes(); // Ensure global CFArray is ready
+  try {
+    const bundleID = (argv.length > 0 && argv[0]) || 'com.anthropic.claudefordesktop';
+    const runningApps = $.NSWorkspace.sharedWorkspace.runningApplications;
+    let targetApp = null;
+
+    for (let i = 0; i < runningApps.count; i++) {
+      const app = runningApps.objectAtIndex(i);
+      if (ObjC.unwrap(app.bundleIdentifier) === bundleID) {
+        targetApp = app;
+        break;
+      }
+    }
+
+    if (targetApp === null) return `Error: App with bundle-ID ${bundleID} not running.`;
+    if (!targetApp.active) {
+        targetApp.activateWithOptions($.NSApplicationActivateIgnoringOtherApps);
+        delay(0.5);
+    }
+
+    const pid = targetApp.processIdentifier;
+    const appAXRef = $.AXUIElementCreateApplication(pid);
+    if (!appAXRef) return "Error: AXUIElementCreateApplication failed.";
+
+    let mainWindowRef = Ref();
+    let err = $.AXUIElementCopyAttributeValue(appAXRef, $.kAXMainWindowAttribute, mainWindowRef);
+    
+    if (err !== $.kAXErrorSuccess || !mainWindowRef[0]) {
+      if (appAXRef) $.CFRelease(appAXRef);
+      // If no main window, try focused window as a fallback for some apps
+      err = $.AXUIElementCopyAttributeValue(appAXRef, $.kAXFocusedWindowAttribute, mainWindowRef);
+      if (err !== $.kAXErrorSuccess || !mainWindowRef[0]) {
+          if (appAXRef) $.CFRelease(appAXRef); // release appAXRef if we fail here too
+          return "Error: Could not get main or focused window AX reference.";
+      }
+    }
+    
+    const windowAXRef = mainWindowRef[0];
+    const texts = harvestAX(windowAXRef);
+    
+    if(windowAXRef) $.CFRelease(windowAXRef);
+    if(appAXRef) $.CFRelease(appAXRef);
+
+    const unique = [...new Set(texts)];
+    return unique.join('\n');
+  } finally {
+    releaseGlobalAttributes(); // Clean up the global CFArray
+  }
+} 

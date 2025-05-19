@@ -1,0 +1,151 @@
+#!/usr/bin/env osascript -l JavaScript
+/*
+ * dump_window_text.jxa  ──────────────────────────────────────────────
+ * Harvest all human-visible text from the front-most window of an app
+ * (defaults to Claude Desktop). This is far more reliable than trying
+ * to copy text via keystrokes because we read directly from the macOS
+ * Accessibility tree.
+ *
+ *  • Usage
+ *      osascript -l JavaScript dump_window_text.jxa               # Claude
+ *      osascript -l JavaScript dump_window_text.jxa com.apple.TextEdit
+ *
+ *  • Output
+ *      New-line separated list of unique text snippets in roughly
+ *      top-down order. UI-chrome like "close button" is filtered out.
+ *
+ *  • Notes / Gotchas
+ *      – Requires the calling terminal to have Accessibility perms.
+ *      – Large Electron UIs can be deep; recursion is tail-limited
+ *        (see MAX_DEPTH) to avoid pathological cases.
+ */
+
+ObjC.import('AppKit'); // pull in ObjC bridge once – cheap and future-proof
+
+const MAX_DEPTH   = 50;        // safety guard against runaway trees
+// const ATTRIBUTES_TO_CHECK = ['value', 'description', 'title', 'help']; // Removed for simplification
+const CHROME_RE   = /^(close|full screen|minimize) button$/i; // common window chrome
+const TEXT_ROLES = ['AXStaticText', 'AXTextField', 'AXTextArea', 'AXTextView'];
+
+/**
+ * Push string to array if it's non-blank and not chrome-only text.
+ */
+function maybeAdd(outArr, s) {
+  if (!s || typeof s !== 'string') return;
+  const t = s.trim();
+  if (!t.length) return;
+//  if (CHROME_RE.test(t)) return;   // skip window buttons
+  outArr.push(t);
+}
+
+/**
+ * Recursively walk AX hierarchy gathering text.
+ */
+function harvest(prefix, elem, depth = 0) {
+  //let elemPath = prefix + "." + elem.role(); // For debugging paths
+  if (depth > MAX_DEPTH) return [];
+  let out = [];
+
+  // Simplified to only check elem.value()
+  try {
+    const v = elem.value();
+    if (typeof v === 'string') {
+      maybeAdd(out, v);
+    } else if (Array.isArray(v)) {
+      v.forEach(x => maybeAdd(out, x));
+    }
+  } catch (_) {
+    // console.log("Error accessing value for " + elemPath); // For debugging
+  }
+
+  // Drill into children, but guard against giant trees
+  try {
+    elem.uiElements().forEach(child => {
+      out = out.concat(harvest(prefix /*elemPath*/ , child, depth + 1)); // Modify prefix if using elemPath
+    });
+  } catch (_) {}
+  return out;
+}
+
+function run(argv) {
+  const bundleID = argv.length ? argv[0] : 'com.anthropic.claudefordesktop';
+
+  try {
+    const app = Application(bundleID);
+    if (app.running()) {
+        app.activate();
+        delay(0.2); 
+    } else {
+        return `Error: Application with bundle ID ${bundleID} is not running.`;
+    }
+  } catch (e) {
+    // Proceed if activation fails, System Events might still find it.
+  }
+
+  const se = Application('System Events');
+  let proc;
+  try {
+    const processes = se.applicationProcesses.whose({bundleIdentifier: bundleID});
+    if (processes.length === 0) {
+        return `Error: Process with bundle ID ${bundleID} not found by System Events.`;
+    }
+    proc = processes[0];
+  } catch (e) {
+    return `Error finding process ${bundleID}: ${e}`;
+  }
+  
+  let win;
+  try {
+    if (!proc.windows || proc.windows.length === 0) {
+        return `Error: Target app ${bundleID} has no windows.`;
+    }
+    win = proc.windows[0];
+    if (!win.exists()) {
+        return `Error: Frontmost window of ${bundleID} does not exist.`;
+    }
+  } catch (e) {
+    return `Error accessing window for ${bundleID}: ${e}`;
+  }
+
+  let collectedTexts = [];
+  try {
+    const allElements = win.entireContents(); // Get all elements once
+    if (allElements && allElements.length > 0) {
+      for (const element of allElements) {
+        try {
+          // Check role (ensure element.role() is callable and returns a string)
+          let role = '';
+          if (typeof element.role === 'function') {
+            role = element.role();
+          }
+
+          if (TEXT_ROLES.includes(role)) {
+            // Check value (ensure element.value() is callable)
+            let val = null;
+            if (typeof element.value === 'function') {
+              val = element.value();
+            }
+
+            if (val !== null && val !== undefined) {
+              const strVal = String(val).trim();
+              if (strVal !== '') {
+                collectedTexts.push(strVal);
+              }
+            }
+          }
+        } catch (e_element) {
+          // console.log("Error processing an element: " + e_element); // Log if a specific element fails
+          continue; // Continue to the next element
+        }
+      }
+    }
+  } catch (e_contents) {
+    // console.log(`Error during entireContents or main loop: ${e_contents}`);
+    // If extraction fails, return what we have, or an error message.
+  }
+
+  if (collectedTexts.length === 0) {
+    // console.log("No text content found. The window might be empty or content not accessible.");
+  }
+  return [...new Set(collectedTexts)].join('\n');
+} 
