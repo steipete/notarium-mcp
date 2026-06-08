@@ -1,5 +1,5 @@
 import type { DB } from '../cache/sqlite.js';
-import { GetInput, GetOutput, ListItemSchema } from '../schemas.js';
+import { GetNotesInput, GetNotesOutput, ListItemSchema } from '../schemas.js';
 import { z } from 'zod';
 import logger from '../logging.js';
 import {
@@ -70,7 +70,7 @@ async function fetchAndFormatSingleNote(idInput: string, db: DB, local_version_p
   try {
     return ListItemSchema.parse({
       type: 'text',
-      uuid: noteRow.id,
+      id: noteRow.id,
       text: previewText, // This is now potentially ranged AND/OR preview-limited
       local_version: noteRow.local_version,
       tags: JSON.parse(noteRow.tags || '[]'),
@@ -88,7 +88,7 @@ async function fetchAndFormatSingleNote(idInput: string, db: DB, local_version_p
  * Handles the 'get' tool invocation.
  * As per Spec 10.2.
  */
-export async function handleGet(params: GetInput, db: DB): Promise<GetOutput> {
+export async function handleGet(params: GetNotesInput, db: DB): Promise<GetNotesOutput> {
   logger.debug({ params }, 'Handling get tool request');
   // After schema validation and transform, params.id is always string[] (named ids_internal for clarity)
   const { id: ids_internal, local_version, range_line_start, range_line_count } = params;

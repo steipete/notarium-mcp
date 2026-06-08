@@ -1,5 +1,7 @@
 # MCP Notarium
 
+![MCP Notarium Header](assets/mcp-notarium-header.png)
+
 **MCP Notarium** is a server application that acts as a bridge between Large Language Models (LLMs) and the [Simplenote](https://simplenote.com/) note-taking service. It exposes a set of tools compliant with the Model Context Protocol (MCP), enabling LLMs to read, write, search, and manage a user's Simplenote notes.
 
 This project is designed to be run by individual users for their own Simplenote account, providing secure and controlled access to their notes via an AI agent or similar MCP-compatible client.

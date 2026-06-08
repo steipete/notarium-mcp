@@ -234,7 +234,7 @@ export async function handleList(params: ListInput, db: DB): Promise<ListOutput>
     }
     return ListItemSchema.parse({
       type: 'text',
-      uuid: row.id,
+      id: row.id,
       text: titlePreviewString,
       local_version: row.local_version,
       tags: parsedTags,
