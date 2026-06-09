@@ -28,7 +28,7 @@ MCP Notarium consists of several key components:
 
 ## Prerequisites
 
-- **Node.js:** Version 18.x LTS or later is recommended (as specified in `package.json` engines).
+- **Node.js:** Version 20.19 or later in the 20.x line, version 22.13 or later in the 22.x line, or version 24 and later is required (as specified in `package.json` engines).
 - **Simplenote Account:** You need an active Simplenote account.
 
 ## Installation and Usage
