@@ -1,0 +1,50 @@
+name: Retirement guard
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Check retirement files
+        run: npm exec prettier -- --check package.json README.md CHANGELOG.md RELEASE_READINESS.md
+      - name: Verify publication guard and redirect
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+
+          const packageJson = JSON.parse(await readFile('package.json', 'utf8'));
+          if (packageJson.private !== true) {
+            throw new Error('package.json must remain private');
+          }
+          if (!packageJson.scripts?.prepublishOnly?.includes('@automattic/simplenote-mcp')) {
+            throw new Error('prepublishOnly must redirect to @automattic/simplenote-mcp');
+          }
+
+          for (const path of ['README.md', 'RELEASE_READINESS.md']) {
+            const content = await readFile(path, 'utf8');
+            if (!content.includes('https://github.com/Automattic/simplenote-mcp')) {
+              throw new Error(`${path} must link to the maintained implementation`);
+            }
+          }
+          NODE
+
+          if npm publish --dry-run >publish.log 2>&1; then
+            cat publish.log
+            echo "npm publication unexpectedly succeeded" >&2
+            exit 1
+          fi
+          grep -F "unreleased prototype; use @automattic/simplenote-mcp" publish.log
