@@ -1,7 +1,8 @@
 {
   "name": "mcp-notarium",
   "version": "1.0.0",
-  "description": "MCP Notarium: A bridge between LLMs and Simplenote.",
+  "private": true,
+  "description": "Unreleased Simplenote MCP prototype. Use @automattic/simplenote-mcp.",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -14,7 +15,8 @@
     "format": "prettier --write \"src/**/*.ts\" \"docs/**/*.md\" \"*.{js,json,md,cjs,mjs}\"",
     "test": "vitest run",
     "test:watch": "vitest",
-    "print-config-vars": "node dist/index.js --print-config-vars"
+    "print-config-vars": "node dist/index.js --print-config-vars",
+    "prepublishOnly": "node -e \"throw new Error('mcp-notarium is an unreleased prototype; use @automattic/simplenote-mcp')\""
   },
   "bin": {
     "mcp-notarium": "dist/index.js"
@@ -25,8 +27,16 @@
     "llm",
     "notetaking"
   ],
-  "author": "",
+  "author": "Peter Steinberger",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/steipete/notarium-mcp.git"
+  },
+  "homepage": "https://github.com/steipete/notarium-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/steipete/notarium-mcp/issues"
+  },
   "dependencies": {
     "axios": "^1.17.0",
     "dotenv": "^16.6.1",
